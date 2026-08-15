@@ -66,7 +66,7 @@ struct PanConfig: Codable {
 
     // 逐组切换模式（直接切换）
     var swipeThreshold: CGFloat = 24            // 手势滑动超过此距离触发一次切换 (px)
-    var switchCooldown: TimeInterval = 0.2      // 两次切换的最小间隔，连续划动按此节奏连翻
+    var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
 
     // 跟手模式
@@ -151,6 +151,9 @@ final class WindowArranger {
     private var stepAccumulator: CGFloat = 0
     private var stepLastEventTime: TimeInterval = 0
     private var lastSwitchTime: TimeInterval = 0
+    /// 本次手势已经切过一次，抬手前不再触发第二次。
+    private var stepLocked = false
+    private var stepIdleWorkItem: DispatchWorkItem?
 
     private var legacyIdleTimer: Timer?
     private var scrollEventPort: CFMachPort?
@@ -380,7 +383,7 @@ final class WindowArranger {
         panVelocity = 0
         gestureVelocity = 0
         gestureAccumulator = 0
-        stepAccumulator = 0
+        endStepGesture()
         panPhase = .idle
         settleState = nil
         legacyIdleTimer?.invalidate()
@@ -439,7 +442,7 @@ final class WindowArranger {
         legacyIdleTimer = nil
         tapWatchdog?.invalidate()
         tapWatchdog = nil
-        stepAccumulator = 0
+        endStepGesture()
 
         if let source = scrollRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -505,12 +508,17 @@ final class WindowArranger {
 
     // MARK: - 逐组切换：跨相位累积
 
-    /// 触控板的 began 事件经常 delta=0（纯相位标记），所以这里不靠 began 建立会话：
-    /// 任何横向主导的非惯性事件都直接累积，攒够 threshold 就切一次，连续划动可以连着切。
+    /// 一次手势只切一次：切过之后上锁，直到手指抬起（ended）或事件停顿超时才解锁。
+    ///
+    /// 不靠 began 开启会话 —— 触控板的 began 经常 delta=0，之前就是因为依赖它才整串丢事件。
+    /// began 只当作额外的解锁点，真正的边界是 ended 和空闲计时，两者少一个都还能兜住。
     private func handleStepScroll(event: CGEvent, phase: Int64, dx: CGFloat, dy: CGFloat) -> Bool {
         switch phase {
+        case Int64(CGScrollPhase.began.rawValue):
+            endStepGesture()
+            return false
         case Int64(CGScrollPhase.ended.rawValue), Int64(CGScrollPhase.cancelled.rawValue):
-            stepAccumulator = 0
+            endStepGesture()
             return false
         case Int64(CGScrollPhase.mayBegin.rawValue):
             return false
@@ -521,7 +529,11 @@ final class WindowArranger {
         // 纵向主导的滚动放行，避免劫持其他 app 的正常滚动
         guard abs(dx) > abs(dy), abs(dx) >= 0.5, isOverBand(event) else { return false }
 
+        // 鼠标滚轮没有 ended 相位，靠停顿补一个手势边界
+        scheduleStepIdleReset()
+
         let now = ProcessInfo.processInfo.systemUptime
+        if stepLocked { return true }
         if now - stepLastEventTime > config.stepIdleReset { stepAccumulator = 0 }
         if stepAccumulator != 0, (stepAccumulator > 0) != (dx > 0) { stepAccumulator = 0 }
         stepLastEventTime = now
@@ -533,8 +545,24 @@ final class WindowArranger {
         lastSwitchTime = now
         let direction = stepAccumulator > 0 ? -1 : 1
         stepAccumulator = 0
+        stepLocked = true
         performSwitch(direction: direction)
         return true
+    }
+
+    /// 结束当前滑动手势：解锁并清空累积，让下一次滑动可以再切一次。
+    private func endStepGesture() {
+        stepIdleWorkItem?.cancel()
+        stepIdleWorkItem = nil
+        stepAccumulator = 0
+        stepLocked = false
+    }
+
+    private func scheduleStepIdleReset() {
+        stepIdleWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.endStepGesture() }
+        stepIdleWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + config.stepIdleReset, execute: work)
     }
 
     // MARK: - 跟手模式
