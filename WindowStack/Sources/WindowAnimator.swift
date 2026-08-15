@@ -57,9 +57,14 @@ final class TransitionOverlay {
         guard let glass else { atPeak({}); return }
         glass.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
         glass.setFrameOrigin(NSPoint(x: -travel + travel * (resuming ? 0 : sign), y: 0))
-        tint?.frame = NSRect(origin: .zero, size: frame.size)
-        tint?.layer?.backgroundColor = NSColor.white
-            .withAlphaComponent(max(0, min(1, brightness))).cgColor
+        // 遮挡层本身是不透明实色，靠 alpha 跟着爬坡：爬到顶时窗口交换被彻底盖住，
+        // 爬坡途中半透明，底下的虚化和横扫照样看得见。
+        guard let tint else { atPeak({}); return }
+        tint.frame = NSRect(origin: .zero, size: frame.size)
+        tint.layer?.backgroundColor = NSColor(
+            white: 0.55 + 0.45 * max(0, min(1, brightness)), alpha: 1
+        ).cgColor
+        if !resuming { tint.alphaValue = 0 }
 
         var writesDone = false
         var holdPassed = false
@@ -74,6 +79,7 @@ final class TransitionOverlay {
                 context.timingFunction = Self.revealCurve
                 context.allowsImplicitAnimation = true
                 overlay.animator().alphaValue = 0
+                tint.animator().alphaValue = 0
                 glass.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
             }, completionHandler: {
                 guard gen == self.generation else { return }
@@ -99,6 +105,7 @@ final class TransitionOverlay {
 
         guard !resuming else {
             overlay.alphaValue = peak
+            tint.alphaValue = 1
             onCovered()
             return
         }
@@ -112,6 +119,7 @@ final class TransitionOverlay {
             context.timingFunction = Self.coverCurve
             context.allowsImplicitAnimation = true
             overlay.animator().alphaValue = peak
+            tint.animator().alphaValue = 1
             glass.animator().setFrameOrigin(NSPoint(x: -travel, y: 0))
         }, completionHandler: onCovered)
     }
