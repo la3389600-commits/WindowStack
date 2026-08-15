@@ -68,13 +68,14 @@ struct PanConfig: Codable {
     var swipeThreshold: CGFloat = 24            // 手势滑动超过此距离触发一次切换 (px)
     var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
-    var switchFadeIntensity: CGFloat = 0.35     // 切换时毛玻璃的最浓程度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 0.42 // 毛玻璃淡入淡出总时长
-    var switchFadeBrightness: CGFloat = 0.55    // 毛玻璃提亮程度，0 = 纯虚化，1 = 最白
+    // 浓度低于 0.5 时内容仍大半可见，看着就是蒙了层灰而不是被盖住，别往下调太多
+    var switchFadeIntensity: CGFloat = 0.72     // 切换时毛玻璃的最浓程度，0 = 关闭特效
+    var switchFadeDuration: TimeInterval = 0.6  // 毛玻璃淡入淡出总时长
+    var switchFadeBrightness: CGFloat = 0.6     // 毛玻璃提亮程度，0 = 纯虚化，1 = 最白
 
     /// 过渡观感这组参数每调一次版就 +1；存档里比它小就把这几项重置回新默认，
     /// 免得用户一直停在旧手感上，也省掉一堆一次性的迁移判断。
-    static let currentFadeStyleRevision = 1
+    static let currentFadeStyleRevision = 2
     var fadeStyleRevision = PanConfig.currentFadeStyleRevision
 
     // 跟手模式

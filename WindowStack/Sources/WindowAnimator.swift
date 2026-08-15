@@ -16,6 +16,7 @@ final class TransitionOverlay {
     private var glass: NSVisualEffectView?
     private var tint: NSView?
     private var generation: UInt = 0
+    private var showing = false
 
     /// - Parameters:
     ///   - frame: AppKit 屏幕坐标下的覆盖区域
@@ -38,16 +39,19 @@ final class TransitionOverlay {
         generation &+= 1
         let gen = generation
         let overlay = ensureWindow()
+        // 上一次还没退场就又切了：接着当前这层继续用，重新从 0 淡入会看到明显一顿
+        let resuming = showing && overlay.isVisible
         overlay.setFrame(frame, display: false)
-        overlay.alphaValue = 0
+        if !resuming { overlay.alphaValue = 0 }
         overlay.orderFrontRegardless()
+        showing = true
 
         // 玻璃比窗口宽出 travel，横扫时两侧才不会露边
         let travel = max(12, min(frame.width * 0.05, 72)) * CGFloat(direction == 0 ? 0 : 1)
         let sign = CGFloat(direction >= 0 ? 1 : -1)
         guard let glass else { atPeak({}); return }
         glass.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
-        glass.setFrameOrigin(NSPoint(x: -travel + travel * sign, y: 0))
+        glass.setFrameOrigin(NSPoint(x: -travel + travel * (resuming ? 0 : sign), y: 0))
         tint?.frame = NSRect(origin: .zero, size: frame.size)
         tint?.layer?.backgroundColor = NSColor.white
             .withAlphaComponent(max(0, min(1, brightness))).cgColor
@@ -68,6 +72,7 @@ final class TransitionOverlay {
                 glass.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
             }, completionHandler: {
                 guard gen == self.generation else { return }
+                self.showing = false
                 overlay.orderOut(nil)
             })
         }
@@ -87,6 +92,12 @@ final class TransitionOverlay {
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxHold, execute: reveal)
         }
 
+        guard !resuming else {
+            overlay.alphaValue = peak
+            onCovered()
+            return
+        }
+
         let cover = duration * 0.38
         // 动画回调万一不来（比如系统降级了动画），窗口也必须切，这里留个兜底
         DispatchQueue.main.asyncAfter(deadline: .now() + cover + 0.2, execute: onCovered)
@@ -102,6 +113,7 @@ final class TransitionOverlay {
 
     func hide() {
         generation &+= 1
+        showing = false
         window?.orderOut(nil)
     }
 

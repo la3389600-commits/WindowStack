@@ -119,9 +119,9 @@ final class SettingsWindowController: NSWindowController {
                      get: { $0.switchCooldown }, set: { $0.switchCooldown = $1 })
         addSliderRow(to: stack, mode: .step, title: "停顿清零时长", range: 0.1...1.0, decimals: 2,
                      get: { $0.stepIdleReset }, set: { $0.stepIdleReset = $1 })
-        addSliderRow(to: stack, mode: .step, title: "切换毛玻璃浓度", range: 0.0...0.8, decimals: 2,
+        addSliderRow(to: stack, mode: .step, title: "切换毛玻璃浓度", range: 0.0...1.0, decimals: 2,
                      get: { $0.switchFadeIntensity }, set: { $0.switchFadeIntensity = $1 })
-        addSliderRow(to: stack, mode: .step, title: "毛玻璃时长", range: 0.15...0.9, decimals: 2,
+        addSliderRow(to: stack, mode: .step, title: "毛玻璃时长", range: 0.15...1.2, decimals: 2,
                      get: { $0.switchFadeDuration }, set: { $0.switchFadeDuration = $1 })
         addSliderRow(to: stack, mode: .step, title: "毛玻璃提亮", range: 0.0...1.0, decimals: 2,
                      get: { $0.switchFadeBrightness }, set: { $0.switchFadeBrightness = $1 })
