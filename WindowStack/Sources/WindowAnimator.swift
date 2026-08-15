@@ -7,6 +7,11 @@ import CoreVideo
 /// 这里换个思路：叠一层我们自己的无边框透明窗，用 NSVisualEffectView 实时虚化背后内容，
 /// 淡入再淡出。全程公开 API，不需要额外权限，也不碰任何别人的窗口。
 final class TransitionOverlay {
+    /// 两端都用对称的缓入缓出：不透明度变化摊得更均匀，
+    /// 同样时长下"渐变"比快起慢收的曲线看着长得多。
+    private static let coverCurve = CAMediaTimingFunction(controlPoints: 0.42, 0, 0.58, 1)
+    private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.38, 0, 0.5, 1)
+
     /// 揭开前至少停留这么久，避免快到看不清的一闪
     private static let minHold: TimeInterval = 0.04
     /// 某个 app 的 AX 写入拖太久时的封顶，玻璃不能一直挂着
@@ -65,8 +70,8 @@ final class TransitionOverlay {
             revealed = true
             guard let self, gen == self.generation, let glass = self.glass else { return }
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = duration * 0.62
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.61, 0.24, 1)
+                context.duration = duration * 0.58
+                context.timingFunction = Self.revealCurve
                 context.allowsImplicitAnimation = true
                 overlay.animator().alphaValue = 0
                 glass.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
@@ -98,13 +103,13 @@ final class TransitionOverlay {
             return
         }
 
-        let cover = duration * 0.38
+        let cover = duration * 0.42
         // 动画回调万一不来（比如系统降级了动画），窗口也必须切，这里留个兜底
         DispatchQueue.main.asyncAfter(deadline: .now() + cover + 0.2, execute: onCovered)
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = cover
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.78, 0.4, 1)
+            context.timingFunction = Self.coverCurve
             context.allowsImplicitAnimation = true
             overlay.animator().alphaValue = peak
             glass.animator().setFrameOrigin(NSPoint(x: -travel, y: 0))
