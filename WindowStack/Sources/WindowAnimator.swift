@@ -7,16 +7,28 @@ import CoreVideo
 /// 这里换个思路：叠一层我们自己的无边框透明窗，用 NSVisualEffectView 实时虚化背后内容，
 /// 淡入再淡出。全程公开 API，不需要额外权限，也不碰任何别人的窗口。
 final class TransitionOverlay {
+    /// 揭开前至少停留这么久，避免快到看不清的一闪
+    private static let minHold: TimeInterval = 0.04
+    /// 某个 app 的 AX 写入拖太久时的封顶，玻璃不能一直挂着
+    private static let maxHold: TimeInterval = 0.22
+
     private var window: NSWindow?
+    private var glass: NSVisualEffectView?
     private var generation: UInt = 0
 
     /// - Parameters:
     ///   - frame: AppKit 屏幕坐标下的覆盖区域
     ///   - peak: 最浓时的不透明度，0 表示关闭特效
-    ///   - atPeak: 毛玻璃升到最浓时回调，窗口切换放在这里做才会被盖住
-    func flash(frame: NSRect, peak: CGFloat, duration: TimeInterval, atPeak: @escaping () -> Void) {
+    ///   - direction: 滑动方向，+1 / -1，玻璃会朝同方向横扫，0 表示不带方向
+    ///   - atPeak: 玻璃升到最浓时回调。窗口切换放这里才会被盖住；
+    ///     切换真正落位后要调一次传入的闭包，玻璃才开始揭开。
+    func flash(frame: NSRect,
+               peak: CGFloat,
+               duration: TimeInterval,
+               direction: Int,
+               atPeak: @escaping (@escaping () -> Void) -> Void) {
         guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else {
-            atPeak()
+            atPeak({})
             return
         }
 
@@ -27,33 +39,59 @@ final class TransitionOverlay {
         overlay.alphaValue = 0
         overlay.orderFrontRegardless()
 
-        // 动画回调万一不来（比如系统降级动画），窗口也必须切，这里留个兜底
-        var fired = false
-        let runPeak: () -> Void = { [weak self] in
-            guard !fired else { return }
-            fired = true
-            guard let self, gen == self.generation else { return }
-            atPeak()
-        }
-        let fadeIn = duration * 0.4
-        DispatchQueue.main.asyncAfter(deadline: .now() + fadeIn + 0.2, execute: runPeak)
+        // 玻璃比窗口宽出 travel，横扫时两侧才不会露边
+        let travel = max(12, min(frame.width * 0.05, 72)) * CGFloat(direction == 0 ? 0 : 1)
+        let sign = CGFloat(direction >= 0 ? 1 : -1)
+        guard let glass else { atPeak({}); return }
+        glass.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
+        glass.setFrameOrigin(NSPoint(x: -travel + travel * sign, y: 0))
 
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = fadeIn
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            overlay.animator().alphaValue = peak
-        }, completionHandler: { [weak self] in
-            runPeak()
-            guard let self, gen == self.generation else { return }
+        var writesDone = false
+        var holdPassed = false
+        var revealed = false
+
+        let reveal: () -> Void = { [weak self] in
+            guard !revealed else { return }
+            revealed = true
+            guard let self, gen == self.generation, let glass = self.glass else { return }
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = duration * 0.6
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                context.duration = duration * 0.62
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.61, 0.24, 1)
+                context.allowsImplicitAnimation = true
                 overlay.animator().alphaValue = 0
+                glass.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
             }, completionHandler: {
                 guard gen == self.generation else { return }
                 overlay.orderOut(nil)
             })
-        })
+        }
+        let maybeReveal = { if writesDone && holdPassed { reveal() } }
+
+        var covered = false
+        let onCovered: () -> Void = { [weak self] in
+            guard !covered else { return }
+            covered = true
+            guard let self, gen == self.generation else { return }
+            atPeak { writesDone = true; maybeReveal() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minHold) {
+                holdPassed = true
+                maybeReveal()
+            }
+            // 写入迟迟不回也得揭开，否则玻璃就挂死在屏幕上了
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxHold, execute: reveal)
+        }
+
+        let cover = duration * 0.38
+        // 动画回调万一不来（比如系统降级了动画），窗口也必须切，这里留个兜底
+        DispatchQueue.main.asyncAfter(deadline: .now() + cover + 0.2, execute: onCovered)
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = cover
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.78, 0.4, 1)
+            context.allowsImplicitAnimation = true
+            overlay.animator().alphaValue = peak
+            glass.animator().setFrameOrigin(NSPoint(x: -travel, y: 0))
+        }, completionHandler: onCovered)
     }
 
     func hide() {
@@ -77,16 +115,22 @@ final class TransitionOverlay {
         created.level = .floating
         created.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
+        // 圆角放在容器上，玻璃在里面横扫时圆角不会跟着跑
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 14
+        container.layer?.masksToBounds = true
+        container.autoresizingMask = [.width, .height]
+
         let effect = NSVisualEffectView()
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.wantsLayer = true
-        effect.layer?.cornerRadius = 14
-        effect.layer?.masksToBounds = true
-        effect.autoresizingMask = [.width, .height]
-        created.contentView = effect
+        container.addSubview(effect)
 
+        created.contentView = container
+        glass = effect
         window = created
         return created
     }

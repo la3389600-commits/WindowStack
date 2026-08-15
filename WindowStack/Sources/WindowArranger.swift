@@ -705,8 +705,9 @@ final class WindowArranger {
 
     private func performPageChange(direction: Int) {
         guard currentMode == .tile, pageCount > 1, !allRecords.isEmpty else { return }
-        let newPage = clamp(currentPageIndex + direction, 0, pageCount - 1)
-        guard newPage != currentPageIndex else { return }
+        let oldPage = currentPageIndex
+        let newPage = clamp(oldPage + direction, 0, pageCount - 1)
+        guard newPage != oldPage else { return }
 
         // 逻辑状态立刻更新，真正的窗口位移推迟到毛玻璃最浓时
         contentOffset = -CGFloat(newPage) * contentPageWidth
@@ -715,21 +716,25 @@ final class WindowArranger {
         transitionOverlay.flash(
             frame: appKitRect(from: bandFrame),
             peak: config.switchFadeIntensity,
-            duration: config.switchFadeDuration
-        ) { [weak self] in
-            self?.applyTilePageFrames()
+            duration: config.switchFadeDuration,
+            direction: newPage > oldPage ? 1 : -1
+        ) { [weak self] done in
+            self?.applyTilePageFrames(completion: done)
         }
     }
 
     /// 按当前 contentOffset 把窗口写到位。故意不捕获调用时的页码：
     /// 连续切换时后到的回调直接落到最新状态，不会先闪回旧页。
-    private func applyTilePageFrames() {
-        guard currentMode == .tile, contentBaseFrames.count == allRecords.count else { return }
+    private func applyTilePageFrames(completion: @escaping () -> Void) {
+        guard currentMode == .tile, contentBaseFrames.count == allRecords.count else {
+            completion()
+            return
+        }
         var writes: [FrameWrite] = []
         for i in allRecords.indices {
             writes.append(FrameWrite(record: allRecords[i], index: i, frame: contentBaseFrames[i].offsetBy(dx: contentOffset, dy: 0)))
         }
-        setFramesAsync(writes)
+        setFramesAsync(writes, completion: completion)
         raiseWindowsAXOnly(currentLayout)
     }
 
@@ -955,7 +960,7 @@ final class WindowArranger {
 
     /// 批量移动窗口。按 app 分流到各自的串行队列：某个 app 的 AX 写慢只拖它自己，
     /// 其余窗口照常瞬时到位。每条队列内部只保留最新目标，连续划动不会堆积。
-    private func setFramesAsync(_ writes: [FrameWrite]) {
+    private func setFramesAsync(_ writes: [FrameWrite], completion: (() -> Void)? = nil) {
         var grouped: [pid_t: [FrameWrite]] = [:]
         for write in writes {
             grouped[write.record.app.processIdentifier, default: []].append(write)
@@ -975,6 +980,16 @@ final class WindowArranger {
         for pid in toStart {
             queue(for: pid).async { [weak self] in self?.drainFrames(pid: pid) }
         }
+
+        guard let completion else { return }
+        // 每个 pid 的队列是串行的：此刻排进去的空块必然排在处理本批写入的 drain 之后，
+        // 全部回来就说明窗口已经真的落位了。
+        let group = DispatchGroup()
+        for pid in grouped.keys {
+            group.enter()
+            queue(for: pid).async { group.leave() }
+        }
+        group.notify(queue: .main, execute: completion)
     }
 
     private func queue(for pid: pid_t) -> DispatchQueue {
