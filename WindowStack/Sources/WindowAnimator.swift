@@ -13,8 +13,12 @@ final class TransitionOverlay {
     /// - Parameters:
     ///   - frame: AppKit 屏幕坐标下的覆盖区域
     ///   - peak: 最浓时的不透明度，0 表示关闭特效
-    func flash(frame: NSRect, peak: CGFloat, duration: TimeInterval) {
-        guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else { return }
+    ///   - atPeak: 毛玻璃升到最浓时回调，窗口切换放在这里做才会被盖住
+    func flash(frame: NSRect, peak: CGFloat, duration: TimeInterval, atPeak: @escaping () -> Void) {
+        guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else {
+            atPeak()
+            return
+        }
 
         generation &+= 1
         let gen = generation
@@ -23,14 +27,26 @@ final class TransitionOverlay {
         overlay.alphaValue = 0
         overlay.orderFrontRegardless()
 
+        // 动画回调万一不来（比如系统降级动画），窗口也必须切，这里留个兜底
+        var fired = false
+        let runPeak: () -> Void = { [weak self] in
+            guard !fired else { return }
+            fired = true
+            guard let self, gen == self.generation else { return }
+            atPeak()
+        }
+        let fadeIn = duration * 0.4
+        DispatchQueue.main.asyncAfter(deadline: .now() + fadeIn + 0.2, execute: runPeak)
+
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = duration * 0.35
+            context.duration = fadeIn
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             overlay.animator().alphaValue = peak
         }, completionHandler: { [weak self] in
+            runPeak()
             guard let self, gen == self.generation else { return }
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = duration * 0.65
+                context.duration = duration * 0.6
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 overlay.animator().alphaValue = 0
             }, completionHandler: {

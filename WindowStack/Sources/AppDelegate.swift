@@ -56,9 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadPreferences() {
         if let data = UserDefaults.standard.data(forKey: configKey),
            var config = try? JSONDecoder().decode(PanConfig.self, from: data) {
-            // 旧默认 0.26 太短；若用户还停在旧默认，抬到新默认
-            if abs(config.switchFadeDuration - 0.26) < 0.001 {
-                config.switchFadeDuration = 0.45
+            // 上一版把时长强写成了 0.45，改成切换时机方案后还原回默认
+            if abs(config.switchFadeDuration - 0.45) < 0.001 {
+                config.switchFadeDuration = 0.26
                 saveConfig(config)
             }
             arranger.config = config

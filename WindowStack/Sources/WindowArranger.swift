@@ -69,7 +69,7 @@ struct PanConfig: Codable {
     var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
     var switchFadeIntensity: CGFloat = 0.35     // 切换时毛玻璃的最浓程度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 0.45 // 毛玻璃淡入淡出总时长
+    var switchFadeDuration: TimeInterval = 0.26 // 毛玻璃淡入淡出总时长
 
     // 跟手模式
     var sensitivity: CGFloat = 2.5
@@ -707,21 +707,29 @@ final class WindowArranger {
         guard currentMode == .tile, pageCount > 1, !allRecords.isEmpty else { return }
         let newPage = clamp(currentPageIndex + direction, 0, pageCount - 1)
         guard newPage != currentPageIndex else { return }
-        let toOffset = -CGFloat(newPage) * contentPageWidth
-        contentOffset = toOffset
-        // 毛玻璃先起，盖住窗口瞬移的那一下硬切
+
+        // 逻辑状态立刻更新，真正的窗口位移推迟到毛玻璃最浓时
+        contentOffset = -CGFloat(newPage) * contentPageWidth
+        currentLayout = pageRecords(for: newPage)
+
         transitionOverlay.flash(
             frame: appKitRect(from: bandFrame),
             peak: config.switchFadeIntensity,
             duration: config.switchFadeDuration
-        )
-        // 直接切换：所有窗口瞬间到位（后台按 app 分队列写入，不阻塞主线程）
+        ) { [weak self] in
+            self?.applyTilePageFrames()
+        }
+    }
+
+    /// 按当前 contentOffset 把窗口写到位。故意不捕获调用时的页码：
+    /// 连续切换时后到的回调直接落到最新状态，不会先闪回旧页。
+    private func applyTilePageFrames() {
+        guard currentMode == .tile, contentBaseFrames.count == allRecords.count else { return }
         var writes: [FrameWrite] = []
         for i in allRecords.indices {
-            writes.append(FrameWrite(record: allRecords[i], index: i, frame: contentBaseFrames[i].offsetBy(dx: toOffset, dy: 0)))
+            writes.append(FrameWrite(record: allRecords[i], index: i, frame: contentBaseFrames[i].offsetBy(dx: contentOffset, dy: 0)))
         }
         setFramesAsync(writes)
-        currentLayout = pageRecords(for: newPage)
         raiseWindowsAXOnly(currentLayout)
     }
 
