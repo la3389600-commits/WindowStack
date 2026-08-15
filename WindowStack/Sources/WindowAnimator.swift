@@ -16,7 +16,7 @@ final class TransitionOverlay {
     private static let minHold: TimeInterval = 0.06
     /// AX 写入返回不等于 app 已经把窗口重绘到新位置，写完再多压一会儿，
     /// 否则遮挡层揭开时还能瞟到窗口在归位。
-    private static let settleHold: TimeInterval = 0.18
+    private static let settleHold: TimeInterval = 0.08
     /// 某个 app 的 AX 写入拖太久时的封顶，玻璃不能一直挂着
     private static let maxHold: TimeInterval = 0.55
 
@@ -201,8 +201,10 @@ final class WindowAnimator {
     private var completion: (() -> Void)?
     private var generation: UInt = 0
     private let epsilon: CGFloat = 0.3
-    /// 参与动画的窗口数在此以内用 60Hz，超过则降 30Hz 避免 AX 洪峰。
-    var max60HzRecords: Int = 12
+    /// 参与动画的窗口数在此以内用 60Hz，超过则降 30Hz。
+    /// AX 写入已经全部挪到各 app 自己的后台队列，主线程不再被拖住，
+    /// 这个阈值可以放得很宽；慢的 app 靠队列内合并自动丢中间帧。
+    var max60HzRecords: Int = 64
 
     func animate(
         records: [WindowRecord],
@@ -339,7 +341,7 @@ final class WindowMotionDriver {
     private var lastTickTime: TimeInterval = 0
     private var generation: UInt = 0
     /// 应用帧率间隔：窗口少时 60Hz，窗口多时降 30Hz 保不卡。
-    var frameInterval: TimeInterval = 1.0 / 30.0
+    var frameInterval: TimeInterval = 1.0 / 60.0
     var tick: ((TimeInterval) -> Void)?
 
     var isRunning: Bool { link != nil }

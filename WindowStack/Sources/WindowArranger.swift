@@ -31,8 +31,22 @@ struct WindowRecord {
 /// 一次待写入的窗口位置；index 指向 allRecords，用来查上次写过的尺寸。
 struct FrameWrite {
     let record: WindowRecord
+    /// 尺寸缓存下标；-1 表示不查缓存、每次都写尺寸（进场/恢复这类会改尺寸的动画用）
     let index: Int
     let frame: CGRect
+}
+
+/// 拿 AXUIElement 本身当字典键，同一扇窗的旧目标才能被新目标准确覆盖。
+private struct WindowKey: Hashable {
+    let element: AXUIElement
+
+    static func == (lhs: WindowKey, rhs: WindowKey) -> Bool {
+        CFEqual(lhs.element, rhs.element)
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(CFHash(element))
+    }
 }
 
 enum ArrangementMode {
@@ -180,7 +194,7 @@ final class WindowArranger {
     private let zOrderQueue = DispatchQueue(label: "com.local.WindowStack.z", qos: .userInteractive)
     /// 每个 app 一条 AX 写入队列：某个 app 的 AX 慢（终端类可达 ~300ms）只拖它自己，别的窗口照常跟手。
     private var appQueues: [pid_t: DispatchQueue] = [:]
-    private var pendingByPID: [pid_t: [FrameWrite]] = [:]
+    private var pendingByPID: [pid_t: [WindowKey: FrameWrite]] = [:]
     private var drainingPIDs = Set<pid_t>()
     /// 上次写入的窗口尺寸；尺寸没变就只写 position，省掉一半 AX 调用。
     private var lastWrittenSizes: [CGSize] = []
@@ -278,10 +292,12 @@ final class WindowArranger {
             currentLayout = firstPageRecords
 
             // 屏幕外页窗口瞬移到位（省动画 AX 调用）
+            var offscreenWrites: [FrameWrite] = []
             for record in offscreenRecords {
                 guard let index = allRecords.firstIndex(where: { isSameWindow($0, record) }) else { continue }
-                setAXFrame(record, contentBaseFrames[index])
+                offscreenWrites.append(FrameWrite(record: record, index: -1, frame: contentBaseFrames[index]))
             }
+            setFramesAsync(offscreenWrites)
 
             // 首屏窗口进场动画
             let startFrames = firstPageRecords.map { CGRect(origin: $0.originalPosition, size: $0.originalSize) }
@@ -292,7 +308,7 @@ final class WindowArranger {
                 targetFrames: targetFrames,
                 duration: 0.42,
                 setFrame: { [weak self] record, frame in
-                    self?.setAXFrame(record, frame)
+                    self?.enqueueAXFrame(record, frame)
                 },
                 completion: { [weak self] in
                     self?.startPanSession()
@@ -324,7 +340,7 @@ final class WindowArranger {
             targetFrames: frames,
             duration: 0.38,
             setFrame: { [weak self] record, frame in
-                self?.setAXFrame(record, frame)
+                self?.enqueueAXFrame(record, frame)
             },
             completion: { [weak self] in
                 self?.startPanSession()
@@ -346,15 +362,20 @@ final class WindowArranger {
         stopPanSession()
         transitionOverlay.hide()
 
-        // 叠放时可能最小化过窗口：先全部还原，再飞回原位
+        // 叠放时可能最小化过窗口：先全部还原，再飞回原位。
+        // 走各 app 自己的队列，和后面的位置写入保持先后顺序，也不占主线程。
         for index in cascadeMinimizedIndices where index < recordsToRestore.count {
-            setAXMinimized(recordsToRestore[index], false)
+            let record = recordsToRestore[index]
+            queue(for: record.app.processIdentifier).async { [weak self] in
+                self?.setAXMinimized(record, false)
+            }
         }
         cascadeMinimizedIndices.removeAll()
 
-        for record in recordsToRestore where !visibleRecords.contains(where: { isSameWindow($0, record) }) {
-            setAXFrame(record, originalFrame(record))
+        let offscreen = recordsToRestore.filter { record in
+            !visibleRecords.contains(where: { isSameWindow($0, record) })
         }
+        setFramesAsync(offscreen.map { FrameWrite(record: $0, index: -1, frame: originalFrame($0)) })
 
         // 起点用排列时的已知目标位置（不依赖 AX 读，避免读取失败导致"恢复不动"）
         let animateRecords = visibleRecords.isEmpty ? recordsToRestore : visibleRecords
@@ -367,7 +388,7 @@ final class WindowArranger {
             targetFrames: targetFrames,
             duration: 0.42,
             setFrame: { [weak self] record, frame in
-                self?.setAXFrame(record, frame)
+                self?.enqueueAXFrame(record, frame)
             },
             completion: { [weak self] in
                 guard let self else { return }
@@ -394,7 +415,7 @@ final class WindowArranger {
             self?.applyPanFrame(dt: dt)
         }
         motionDriver.stop()
-        motionDriver.frameInterval = allRecords.count <= 16 ? 1.0 / 60.0 : 1.0 / 30.0
+        motionDriver.frameInterval = 1.0 / 60.0
         contentOffset = 0
         pendingInputDelta = 0
         panVelocity = 0
@@ -629,13 +650,16 @@ final class WindowArranger {
         gestureVelocity = 0
         lastScrollTime = 0
         if currentMode == .tile, !contentBaseFrames.isEmpty {
+            // 手势刚落下就同步写全部窗口的话，第一下必然顿住，这里也走异步队列
+            var writes: [FrameWrite] = []
             for i in allRecords.indices {
                 let frame = contentBaseFrames[i].offsetBy(dx: contentOffset, dy: 0)
                 if deltaExceeds(lastSetFrames[i], frame, config.epsilon) {
                     lastSetFrames[i] = frame
-                    setAXFrame(allRecords[i], frame)
+                    writes.append(FrameWrite(record: allRecords[i], index: i, frame: frame))
                 }
             }
+            setFramesAsync(writes)
             raiseWindowsAXOnly(currentLayout)
         }
         motionDriver.start()
@@ -773,13 +797,19 @@ final class WindowArranger {
             return
         }
         let record = allRecords[front]
-        setAXMinimized(record, true)
         cascadeMinimizedIndices.append(front)
         let remaining = Array(visible.dropLast())
         currentLayout = remaining.map { allRecords[$0] }
+        // 最小化和 raise 都是同步 IPC，慢的 app 能卡住主线程上百毫秒
+        zOrderQueue.async { [weak self] in
+            self?.setAXMinimized(record, true)
+        }
         if let next = remaining.last {
-            allRecords[next].app.activate(options: [.activateIgnoringOtherApps])
-            AXUIElementPerformAction(allRecords[next].element, "AXRaise" as CFString)
+            let nextRecord = allRecords[next]
+            nextRecord.app.activate(options: [.activateIgnoringOtherApps])
+            zOrderQueue.async {
+                AXUIElementPerformAction(nextRecord.element, "AXRaise" as CFString)
+            }
         }
         logTrace("cascade minimize idx=\(front) title=\(record.title) remaining=\(remaining.count)")
     }
@@ -790,12 +820,14 @@ final class WindowArranger {
             return
         }
         let record = allRecords[front]
-        setAXMinimized(record, false)
-        if front < cascadeBaseFrames.count {
-            setAXFrame(record, cascadeBaseFrames[front])
-        }
+        let frame = front < cascadeBaseFrames.count ? cascadeBaseFrames[front] : nil
         record.app.activate(options: [.activateIgnoringOtherApps])
-        AXUIElementPerformAction(record.element, "AXRaise" as CFString)
+        zOrderQueue.async { [weak self] in
+            guard let self else { return }
+            self.setAXMinimized(record, false)
+            if let frame { self.setAXFrame(record, frame) }
+            AXUIElementPerformAction(record.element, "AXRaise" as CFString)
+        }
         currentLayout = cascadeVisibleIndices().map { allRecords[$0] }
         logTrace("cascade restore idx=\(front) title=\(record.title)")
     }
@@ -872,13 +904,14 @@ final class WindowArranger {
     private func finalizeSettle() {
         switch currentMode {
         case .tile:
+            var writes: [FrameWrite] = []
             for i in allRecords.indices {
                 let base = contentBaseFrames[i]
                 let frame = base.offsetBy(dx: contentOffset, dy: 0)
                 if frame.intersects(bandFrame) {
                     if deltaExceeds(lastSetFrames[i], frame, config.epsilon) {
                         lastSetFrames[i] = frame
-                        setAXFrame(allRecords[i], frame)
+                        writes.append(FrameWrite(record: allRecords[i], index: i, frame: frame))
                     }
                 } else if config.parkFarPagesOnSettle {
                     var park = frame
@@ -889,10 +922,11 @@ final class WindowArranger {
                     }
                     if deltaExceeds(lastSetFrames[i], park, config.epsilon) {
                         lastSetFrames[i] = park
-                        setAXFrame(allRecords[i], park)
+                        writes.append(FrameWrite(record: allRecords[i], index: i, frame: park))
                     }
                 }
             }
+            setFramesAsync(writes)
             currentLayout = currentPageRecords()
             raiseWindowsAXOnly(currentLayout)
         case .cascade:
@@ -920,6 +954,7 @@ final class WindowArranger {
         let bandY0 = bandFrame.minY - 400
         let bandY1 = bandFrame.maxY + 400
 
+        var writes: [FrameWrite] = []
         for i in allRecords.indices {
             let frame = contentBaseFrames[i].offsetBy(dx: contentOffset, dy: 0)
             let inBand = frame.maxX >= bandMinX && frame.minX <= bandMaxX &&
@@ -927,8 +962,9 @@ final class WindowArranger {
             let eps = inBand ? config.epsilon : config.farEpsilon
             guard deltaExceeds(lastSetFrames[i], frame, eps) else { continue }
             lastSetFrames[i] = frame
-            setAXPositionOnly(allRecords[i], frame.origin)
+            writes.append(FrameWrite(record: allRecords[i], index: i, frame: frame))
         }
+        setFramesAsync(writes)
     }
 
     // MARK: - 页面索引
@@ -972,15 +1008,19 @@ final class WindowArranger {
     /// 批量移动窗口。按 app 分流到各自的串行队列：某个 app 的 AX 写慢只拖它自己，
     /// 其余窗口照常瞬时到位。每条队列内部只保留最新目标，连续划动不会堆积。
     private func setFramesAsync(_ writes: [FrameWrite], completion: (() -> Void)? = nil) {
-        var grouped: [pid_t: [FrameWrite]] = [:]
-        for write in writes {
-            grouped[write.record.app.processIdentifier, default: []].append(write)
+        guard !writes.isEmpty else {
+            completion?()
+            return
         }
 
+        var touched = Set<pid_t>()
         var toStart: [pid_t] = []
         axLock.lock()
-        for (pid, list) in grouped {
-            pendingByPID[pid] = list        // 覆盖为最新目标，丢弃中间态
+        for write in writes {
+            let pid = write.record.app.processIdentifier
+            // 按窗口合并：同一扇窗只留最新目标，不同窗互不覆盖
+            pendingByPID[pid, default: [:]][WindowKey(element: write.record.element)] = write
+            touched.insert(pid)
             if !drainingPIDs.contains(pid) {
                 drainingPIDs.insert(pid)
                 toStart.append(pid)
@@ -996,11 +1036,17 @@ final class WindowArranger {
         // 每个 pid 的队列是串行的：此刻排进去的空块必然排在处理本批写入的 drain 之后，
         // 全部回来就说明窗口已经真的落位了。
         let group = DispatchGroup()
-        for pid in grouped.keys {
+        for pid in touched {
             group.enter()
             queue(for: pid).async { group.leave() }
         }
         group.notify(queue: .main, execute: completion)
+    }
+
+    /// 单扇窗的异步写入，给动画驱动按帧调用。默认每帧都写尺寸，
+    /// 因为进场/恢复动画本身就在插值尺寸。
+    private func enqueueAXFrame(_ record: WindowRecord, _ frame: CGRect, sizeIndex: Int = -1) {
+        setFramesAsync([FrameWrite(record: record, index: sizeIndex, frame: frame)])
     }
 
     private func queue(for pid: pid_t) -> DispatchQueue {
@@ -1024,7 +1070,7 @@ final class WindowArranger {
             pendingByPID[pid] = nil
             axLock.unlock()
 
-            for write in batch {
+            for write in batch.values {
                 let start = ProcessInfo.processInfo.systemUptime
                 var position = write.frame.origin
                 if let positionValue = AXValueCreate(.cgPoint, &position) {
@@ -1299,9 +1345,8 @@ final class WindowArranger {
             record.app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         }
 
-        for record in records {
-            AXUIElementPerformAction(record.element, "AXRaise" as CFString)
-        }
+        // AXRaise 是同步 IPC，扔到 z 序队列去，别卡住正在跑的进场动画
+        raiseWindowsAXOnly(records)
     }
 
     // MARK: - 坐标转换
@@ -1382,13 +1427,6 @@ final class WindowArranger {
             kAXMinimizedAttribute as CFString,
             minimized ? kCFBooleanTrue : kCFBooleanFalse
         )
-    }
-
-    private func setAXPositionOnly(_ record: WindowRecord, _ point: CGPoint) {
-        var position = point
-        if let positionValue = AXValueCreate(.cgPoint, &position) {
-            AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, positionValue)
-        }
     }
 
     private func currentAXFrame(_ record: WindowRecord) -> CGRect? {

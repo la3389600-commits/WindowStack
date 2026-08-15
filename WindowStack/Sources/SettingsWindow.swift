@@ -8,8 +8,8 @@ final class SettingsWindowController: NSWindowController {
     private var hotKeyButtons: [HotKeyAction: NSButton] = [:]
     private var modePopup: NSPopUpButton?
     private var sliderBindings: [SliderBinding] = []
-    private var stepHeader: NSTextField?
-    private var followHeader: NSTextField?
+    private var stepGroup: NSStackView?
+    private var followGroup: NSStackView?
     private var currentConfig = PanConfig()
     private var currentHotKeys: [HotKeyAction: HotKeySpec] = [:]
     private var recordingAction: HotKeyAction?
@@ -25,7 +25,7 @@ final class SettingsWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -94,11 +94,12 @@ final class SettingsWindowController: NSWindowController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         // 滑动模式
-        let modeLabel = NSTextField(labelWithString: "滑动模式：")
+        let modeLabel = NSTextField(labelWithString: "滑动模式")
+        modeLabel.font = NSFont.systemFont(ofSize: 13)
         let popup = NSPopUpButton()
         popup.addItems(withTitles: InteractionMode.allCases.map { $0.displayName })
         popup.target = self
@@ -106,66 +107,92 @@ final class SettingsWindowController: NSWindowController {
         modePopup = popup
         let modeRow = NSStackView(views: [modeLabel, popup])
         modeRow.orientation = .horizontal
-        modeRow.spacing = 8
+        modeRow.spacing = 12
         stack.addArrangedSubview(modeRow)
 
-        let stepHeaderLabel = sectionHeader("逐组切换模式参数")
-        stepHeader = stepHeaderLabel
-        stack.addArrangedSubview(stepHeaderLabel)
-
-        addSliderRow(to: stack, mode: .step, title: "滑动触发距离", range: 10...80, decimals: 0,
+        let step = sectionGroup("逐组切换模式参数")
+        stepGroup = step
+        addSliderRow(to: step, mode: .step, title: "滑动触发距离", range: 10...80, decimals: 0,
                      get: { $0.swipeThreshold }, set: { $0.swipeThreshold = $1 })
-        addSliderRow(to: stack, mode: .step, title: "连切最小间隔", range: 0.05...0.6, decimals: 2,
+        addSliderRow(to: step, mode: .step, title: "连切最小间隔", range: 0.05...0.6, decimals: 2,
                      get: { $0.switchCooldown }, set: { $0.switchCooldown = $1 })
-        addSliderRow(to: stack, mode: .step, title: "停顿清零时长", range: 0.1...1.0, decimals: 2,
+        addSliderRow(to: step, mode: .step, title: "停顿清零时长", range: 0.1...1.0, decimals: 2,
                      get: { $0.stepIdleReset }, set: { $0.stepIdleReset = $1 })
-        addSliderRow(to: stack, mode: .step, title: "峰值遮挡强度", range: 0.0...1.0, decimals: 2,
+        addSliderRow(to: step, mode: .step, title: "峰值遮挡强度", range: 0.0...1.0, decimals: 2,
                      get: { $0.switchFadeIntensity }, set: { $0.switchFadeIntensity = $1 })
-        addSliderRow(to: stack, mode: .step, title: "毛玻璃时长", range: 0.15...2.0, decimals: 2,
+        addSliderRow(to: step, mode: .step, title: "毛玻璃时长", range: 0.15...2.0, decimals: 2,
                      get: { $0.switchFadeDuration }, set: { $0.switchFadeDuration = $1 })
-        addSliderRow(to: stack, mode: .step, title: "遮挡层亮度", range: 0.0...1.0, decimals: 2,
+        addSliderRow(to: step, mode: .step, title: "遮挡层亮度", range: 0.0...1.0, decimals: 2,
                      get: { $0.switchFadeBrightness }, set: { $0.switchFadeBrightness = $1 })
+        stack.addArrangedSubview(step)
 
-        let followHeaderLabel = sectionHeader("跟手模式参数")
-        followHeader = followHeaderLabel
-        stack.addArrangedSubview(followHeaderLabel)
-
-        addSliderRow(to: stack, mode: .follow, title: "跟手灵敏度", range: 1.0...4.0, decimals: 1,
+        let follow = sectionGroup("跟手模式参数")
+        followGroup = follow
+        addSliderRow(to: follow, mode: .follow, title: "跟手灵敏度", range: 1.0...4.0, decimals: 1,
                      get: { $0.sensitivity }, set: { $0.sensitivity = $1 })
-        addSliderRow(to: stack, mode: .follow, title: "惯性时长", range: 0.2...0.8, decimals: 2,
+        addSliderRow(to: follow, mode: .follow, title: "惯性时长", range: 0.2...0.8, decimals: 2,
                      get: { $0.inertiaTau }, set: { $0.inertiaTau = $1 })
-        addSliderRow(to: stack, mode: .follow, title: "吸附时长", range: 0.15...0.6, decimals: 2,
+        addSliderRow(to: follow, mode: .follow, title: "吸附时长", range: 0.15...0.6, decimals: 2,
                      get: { $0.settleDuration }, set: { $0.settleDuration = $1 })
-        addSliderRow(to: stack, mode: .follow, title: "吸附弹性", range: 1.0...1.8, decimals: 2,
+        addSliderRow(to: follow, mode: .follow, title: "吸附弹性", range: 1.0...1.8, decimals: 2,
                      get: { $0.settleOvershoot }, set: { $0.settleOvershoot = $1 })
-        addSliderRow(to: stack, mode: .follow, title: "甩动翻页阈值", range: 500...2000, decimals: 0,
+        addSliderRow(to: follow, mode: .follow, title: "甩动翻页阈值", range: 500...2000, decimals: 0,
                      get: { $0.flingVelocity }, set: { $0.flingVelocity = $1 })
-        addSliderRow(to: stack, mode: .follow, title: "惯性触发阈值", range: 100...500, decimals: 0,
+        addSliderRow(to: follow, mode: .follow, title: "惯性触发阈值", range: 100...500, decimals: 0,
                      get: { $0.minInertiaVelocity }, set: { $0.minInertiaVelocity = $1 })
+        stack.addArrangedSubview(follow)
 
         let resetButton = NSButton(title: "恢复默认设置", target: self, action: #selector(resetDefaults))
         resetButton.bezelStyle = .rounded
         stack.addArrangedSubview(resetButton)
+        stack.setCustomSpacing(24, after: modeRow)
+        stack.setCustomSpacing(26, after: step)
+        stack.setCustomSpacing(26, after: follow)
+        step.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        follow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         view.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -8)
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -20)
         ])
         return view
+    }
+
+    /// 一个分组 = 标题 + 若干行，整组一起显示或隐藏，行间距比组间距小，层级才读得出来。
+    private func sectionGroup(_ title: String) -> NSStackView {
+        let group = NSStackView()
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 12
+        let header = sectionHeader(title)
+        group.addArrangedSubview(header)
+        group.setCustomSpacing(14, after: header)
+        return group
     }
 
     private func sectionHeader(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
+        label.textColor = .tertiaryLabelColor
+        // 分组标题和上一组之间留出呼吸空间，靠字距和上间距把层级拉开
+        if let existing = label.cell as? NSTextFieldCell {
+            existing.attributedStringValue = NSAttributedString(
+                string: text,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                    .kern: 0.6
+                ]
+            )
+        }
         return label
     }
 
     private func addSliderRow(
-        to stack: NSStackView,
+        to group: NSStackView,
         mode: InteractionMode,
         title: String,
         range: ClosedRange<Double>,
@@ -175,26 +202,29 @@ final class SettingsWindowController: NSWindowController {
     ) {
         let row = NSStackView()
         row.orientation = .horizontal
-        row.spacing = 10
+        row.spacing = 16
 
         let label = NSTextField(labelWithString: title)
-        label.font = NSFont.systemFont(ofSize: 12)
-        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        label.font = NSFont.systemFont(ofSize: 13)
+        label.textColor = .labelColor
+        label.widthAnchor.constraint(equalToConstant: 132).isActive = true
 
         let slider = NSSlider(value: get(currentConfig), minValue: range.lowerBound, maxValue: range.upperBound, target: self, action: #selector(sliderChanged(_:)))
         slider.isContinuous = true
 
         let valueLabel = NSTextField(labelWithString: format(get(currentConfig), decimals: decimals))
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        valueLabel.textColor = .secondaryLabelColor
         valueLabel.alignment = .right
-        valueLabel.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        valueLabel.widthAnchor.constraint(equalToConstant: 54).isActive = true
 
         row.addArrangedSubview(label)
         row.addArrangedSubview(slider)
         row.addArrangedSubview(valueLabel)
 
         sliderBindings.append(SliderBinding(slider: slider, valueLabel: valueLabel, mode: mode, get: get, set: set))
-        stack.addArrangedSubview(row)
+        group.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
     }
 
     // MARK: 快捷键页
@@ -204,26 +234,27 @@ final class SettingsWindowController: NSWindowController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(wrappingLabelWithString: "点击快捷键按钮，然后按下新的组合键即可修改。Esc 取消。")
+        let hint = NSTextField(wrappingLabelWithString: "点击右侧按钮，然后按下新的组合键即可修改，Esc 取消。")
         hint.textColor = .secondaryLabelColor
-        hint.font = NSFont.systemFont(ofSize: 11)
+        hint.font = NSFont.systemFont(ofSize: 12)
         stack.addArrangedSubview(hint)
+        stack.setCustomSpacing(24, after: hint)
 
         for action in HotKeyAction.allCases {
             let row = NSStackView()
             row.orientation = .horizontal
-            row.spacing = 12
+            row.spacing = 16
 
             let label = NSTextField(labelWithString: title(for: action))
             label.font = NSFont.systemFont(ofSize: 13)
-            label.widthAnchor.constraint(equalToConstant: 90).isActive = true
+            label.widthAnchor.constraint(equalToConstant: 110).isActive = true
 
             let button = NSButton(title: "", target: self, action: #selector(hotKeyClicked(_:)))
             button.bezelStyle = .rounded
-            button.widthAnchor.constraint(equalToConstant: 160).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 180).isActive = true
             hotKeyButtons[action] = button
 
             row.addArrangedSubview(label)
@@ -233,10 +264,10 @@ final class SettingsWindowController: NSWindowController {
 
         view.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -8)
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -20)
         ])
         return view
     }
@@ -260,18 +291,13 @@ final class SettingsWindowController: NSWindowController {
         if let index = InteractionMode.allCases.firstIndex(of: mode) {
             modePopup?.selectItem(at: index)
         }
-        // 只显示当前模式对应的滑块，避免调了不生效
+        // 整组一起隐藏。之前只藏滑块不藏标题，另一模式的标题会孤零零留在那儿。
         let showStep = mode == .step
-        stepHeader?.isHidden = !showStep
-        followHeader?.isHidden = showStep
-        for binding in sliderBindings {
-            let visible = binding.mode == mode
-            binding.slider.isHidden = !visible
-            binding.valueLabel.isHidden = !visible
-            if visible {
-                binding.slider.doubleValue = binding.get(currentConfig)
-                binding.valueLabel.stringValue = format(binding.get(currentConfig), decimals: decimals(for: binding.slider))
-            }
+        stepGroup?.isHidden = !showStep
+        followGroup?.isHidden = showStep
+        for binding in sliderBindings where binding.mode == mode {
+            binding.slider.doubleValue = binding.get(currentConfig)
+            binding.valueLabel.stringValue = format(binding.get(currentConfig), decimals: decimals(for: binding.slider))
         }
         for (action, spec) in currentHotKeys {
             hotKeyButtons[action]?.title = spec.display
