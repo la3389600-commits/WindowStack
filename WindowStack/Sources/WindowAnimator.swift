@@ -14,17 +14,20 @@ final class TransitionOverlay {
 
     private var window: NSWindow?
     private var glass: NSVisualEffectView?
+    private var tint: NSView?
     private var generation: UInt = 0
 
     /// - Parameters:
     ///   - frame: AppKit 屏幕坐标下的覆盖区域
     ///   - peak: 最浓时的不透明度，0 表示关闭特效
+    ///   - brightness: 白色提亮层的浓度，0 表示只虚化不提亮
     ///   - direction: 滑动方向，+1 / -1，玻璃会朝同方向横扫，0 表示不带方向
     ///   - atPeak: 玻璃升到最浓时回调。窗口切换放这里才会被盖住；
     ///     切换真正落位后要调一次传入的闭包，玻璃才开始揭开。
     func flash(frame: NSRect,
                peak: CGFloat,
                duration: TimeInterval,
+               brightness: CGFloat,
                direction: Int,
                atPeak: @escaping (@escaping () -> Void) -> Void) {
         guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else {
@@ -45,6 +48,9 @@ final class TransitionOverlay {
         guard let glass else { atPeak({}); return }
         glass.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
         glass.setFrameOrigin(NSPoint(x: -travel + travel * sign, y: 0))
+        tint?.frame = NSRect(origin: .zero, size: frame.size)
+        tint?.layer?.backgroundColor = NSColor.white
+            .withAlphaComponent(max(0, min(1, brightness))).cgColor
 
         var writesDone = false
         var holdPassed = false
@@ -114,6 +120,8 @@ final class TransitionOverlay {
         created.ignoresMouseEvents = true
         created.level = .floating
         created.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        // 钉死浅色外观：跟随系统的话深色模式下材质会变成深灰，看着像蒙了层脏东西
+        created.appearance = NSAppearance(named: .aqua)
 
         // 圆角放在容器上，玻璃在里面横扫时圆角不会跟着跑
         let container = NSView()
@@ -123,14 +131,21 @@ final class TransitionOverlay {
         container.autoresizingMask = [.width, .height]
 
         let effect = NSVisualEffectView()
-        effect.material = .hudWindow
+        effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.wantsLayer = true
         container.addSubview(effect)
 
+        // 提亮层压在虚化之上，把灰底往白里拉
+        let white = NSView()
+        white.wantsLayer = true
+        white.autoresizingMask = [.width, .height]
+        container.addSubview(white)
+
         created.contentView = container
         glass = effect
+        tint = white
         window = created
         return created
     }

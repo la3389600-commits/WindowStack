@@ -69,7 +69,13 @@ struct PanConfig: Codable {
     var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
     var switchFadeIntensity: CGFloat = 0.35     // 切换时毛玻璃的最浓程度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 0.26 // 毛玻璃淡入淡出总时长
+    var switchFadeDuration: TimeInterval = 0.42 // 毛玻璃淡入淡出总时长
+    var switchFadeBrightness: CGFloat = 0.55    // 毛玻璃提亮程度，0 = 纯虚化，1 = 最白
+
+    /// 过渡观感这组参数每调一次版就 +1；存档里比它小就把这几项重置回新默认，
+    /// 免得用户一直停在旧手感上，也省掉一堆一次性的迁移判断。
+    static let currentFadeStyleRevision = 1
+    var fadeStyleRevision = PanConfig.currentFadeStyleRevision
 
     // 跟手模式
     var sensitivity: CGFloat = 2.5
@@ -97,6 +103,9 @@ struct PanConfig: Codable {
         stepIdleReset = try c.decodeIfPresent(TimeInterval.self, forKey: .stepIdleReset) ?? d.stepIdleReset
         switchFadeIntensity = try c.decodeIfPresent(CGFloat.self, forKey: .switchFadeIntensity) ?? d.switchFadeIntensity
         switchFadeDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .switchFadeDuration) ?? d.switchFadeDuration
+        switchFadeBrightness = try c.decodeIfPresent(CGFloat.self, forKey: .switchFadeBrightness) ?? d.switchFadeBrightness
+        // 缺字段说明是改版之前存的，按 0 处理才能触发重置
+        fadeStyleRevision = try c.decodeIfPresent(Int.self, forKey: .fadeStyleRevision) ?? 0
         sensitivity = try c.decodeIfPresent(CGFloat.self, forKey: .sensitivity) ?? d.sensitivity
         minInertiaVelocity = try c.decodeIfPresent(CGFloat.self, forKey: .minInertiaVelocity) ?? d.minInertiaVelocity
         inertiaTau = try c.decodeIfPresent(TimeInterval.self, forKey: .inertiaTau) ?? d.inertiaTau
@@ -717,6 +726,7 @@ final class WindowArranger {
             frame: appKitRect(from: bandFrame),
             peak: config.switchFadeIntensity,
             duration: config.switchFadeDuration,
+            brightness: config.switchFadeBrightness,
             direction: newPage > oldPage ? 1 : -1
         ) { [weak self] done in
             self?.applyTilePageFrames(completion: done)
