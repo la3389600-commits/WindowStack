@@ -69,7 +69,7 @@ struct PanConfig: Codable {
     var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
     var switchFadeIntensity: CGFloat = 0.35     // 切换时毛玻璃的最浓程度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 0.26 // 毛玻璃淡入淡出总时长
+    var switchFadeDuration: TimeInterval = 0.45 // 毛玻璃淡入淡出总时长
 
     // 跟手模式
     var sensitivity: CGFloat = 2.5

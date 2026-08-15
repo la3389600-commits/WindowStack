@@ -55,7 +55,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadPreferences() {
         if let data = UserDefaults.standard.data(forKey: configKey),
-           let config = try? JSONDecoder().decode(PanConfig.self, from: data) {
+           var config = try? JSONDecoder().decode(PanConfig.self, from: data) {
+            // 旧默认 0.26 太短；若用户还停在旧默认，抬到新默认
+            if abs(config.switchFadeDuration - 0.26) < 0.001 {
+                config.switchFadeDuration = 0.45
+                saveConfig(config)
+            }
             arranger.config = config
         }
         hotKeys = defaultHotKeys()
