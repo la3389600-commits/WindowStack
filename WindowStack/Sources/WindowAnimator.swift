@@ -1,6 +1,81 @@
 import AppKit
 import CoreVideo
 
+/// 切换时掠过一层毛玻璃，给"直接切换"加一点柔和的过渡感。
+///
+/// 改别的 app 的窗口透明度需要关 SIP 并往 Dock 注入代码（yabai 就是这么做的），
+/// 这里换个思路：叠一层我们自己的无边框透明窗，用 NSVisualEffectView 实时虚化背后内容，
+/// 淡入再淡出。全程公开 API，不需要额外权限，也不碰任何别人的窗口。
+final class TransitionOverlay {
+    private var window: NSWindow?
+    private var generation: UInt = 0
+
+    /// - Parameters:
+    ///   - frame: AppKit 屏幕坐标下的覆盖区域
+    ///   - peak: 最浓时的不透明度，0 表示关闭特效
+    func flash(frame: NSRect, peak: CGFloat, duration: TimeInterval) {
+        guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else { return }
+
+        generation &+= 1
+        let gen = generation
+        let overlay = ensureWindow()
+        overlay.setFrame(frame, display: false)
+        overlay.alphaValue = 0
+        overlay.orderFrontRegardless()
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration * 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            overlay.animator().alphaValue = peak
+        }, completionHandler: { [weak self] in
+            guard let self, gen == self.generation else { return }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = duration * 0.65
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                overlay.animator().alphaValue = 0
+            }, completionHandler: {
+                guard gen == self.generation else { return }
+                overlay.orderOut(nil)
+            })
+        })
+    }
+
+    func hide() {
+        generation &+= 1
+        window?.orderOut(nil)
+    }
+
+    private func ensureWindow() -> NSWindow {
+        if let window { return window }
+
+        let created = NSWindow(
+            contentRect: .zero,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        created.isOpaque = false
+        created.backgroundColor = .clear
+        created.hasShadow = false
+        created.ignoresMouseEvents = true
+        created.level = .floating
+        created.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 14
+        effect.layer?.masksToBounds = true
+        effect.autoresizingMask = [.width, .height]
+        created.contentView = effect
+
+        window = created
+        return created
+    }
+}
+
 /// 由 vsync 驱动的窗口动画器：按窗口数选帧率 + epsilon 过滤 + generation 竞态防护 + 可选弹性过冲。
 /// 用于平铺/叠放的进场动画、翻页切换、叠放滚动与恢复布局。
 final class WindowAnimator {

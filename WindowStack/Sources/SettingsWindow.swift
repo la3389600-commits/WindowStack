@@ -119,6 +119,10 @@ final class SettingsWindowController: NSWindowController {
                      get: { $0.switchCooldown }, set: { $0.switchCooldown = $1 })
         addSliderRow(to: stack, mode: .step, title: "停顿清零时长", range: 0.1...1.0, decimals: 2,
                      get: { $0.stepIdleReset }, set: { $0.stepIdleReset = $1 })
+        addSliderRow(to: stack, mode: .step, title: "切换毛玻璃浓度", range: 0.0...0.8, decimals: 2,
+                     get: { $0.switchFadeIntensity }, set: { $0.switchFadeIntensity = $1 })
+        addSliderRow(to: stack, mode: .step, title: "毛玻璃时长", range: 0.1...0.6, decimals: 2,
+                     get: { $0.switchFadeDuration }, set: { $0.switchFadeDuration = $1 })
 
         let followHeaderLabel = sectionHeader("跟手模式参数")
         followHeader = followHeaderLabel

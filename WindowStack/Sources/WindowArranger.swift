@@ -68,6 +68,8 @@ struct PanConfig: Codable {
     var swipeThreshold: CGFloat = 24            // 手势滑动超过此距离触发一次切换 (px)
     var switchCooldown: TimeInterval = 0.1      // 两次切换的最小间隔（手势锁之外的兜底防抖）
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
+    var switchFadeIntensity: CGFloat = 0.35     // 切换时毛玻璃的最浓程度，0 = 关闭特效
+    var switchFadeDuration: TimeInterval = 0.26 // 毛玻璃淡入淡出总时长
 
     // 跟手模式
     var sensitivity: CGFloat = 2.5
@@ -93,6 +95,8 @@ struct PanConfig: Codable {
         swipeThreshold = try c.decodeIfPresent(CGFloat.self, forKey: .swipeThreshold) ?? d.swipeThreshold
         switchCooldown = try c.decodeIfPresent(TimeInterval.self, forKey: .switchCooldown) ?? d.switchCooldown
         stepIdleReset = try c.decodeIfPresent(TimeInterval.self, forKey: .stepIdleReset) ?? d.stepIdleReset
+        switchFadeIntensity = try c.decodeIfPresent(CGFloat.self, forKey: .switchFadeIntensity) ?? d.switchFadeIntensity
+        switchFadeDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .switchFadeDuration) ?? d.switchFadeDuration
         sensitivity = try c.decodeIfPresent(CGFloat.self, forKey: .sensitivity) ?? d.sensitivity
         minInertiaVelocity = try c.decodeIfPresent(CGFloat.self, forKey: .minInertiaVelocity) ?? d.minInertiaVelocity
         inertiaTau = try c.decodeIfPresent(TimeInterval.self, forKey: .inertiaTau) ?? d.inertiaTau
@@ -161,6 +165,7 @@ final class WindowArranger {
     private var tapWatchdog: Timer?
     private let animator = WindowAnimator()
     private let motionDriver = WindowMotionDriver()
+    private let transitionOverlay = TransitionOverlay()
     /// z 序调整串行队列：raise 的先后顺序决定最终叠放次序，不能并发。
     private let zOrderQueue = DispatchQueue(label: "com.local.WindowStack.z", qos: .userInteractive)
     /// 每个 app 一条 AX 写入队列：某个 app 的 AX 慢（终端类可达 ~300ms）只拖它自己，别的窗口照常跟手。
@@ -182,6 +187,7 @@ final class WindowArranger {
     func shutdown() {
         stopPanSession()
         animator.cancel()
+        transitionOverlay.hide()
     }
 
     static var isTrusted: Bool {
@@ -328,6 +334,7 @@ final class WindowArranger {
         guard !recordsToRestore.isEmpty else { return false }
 
         stopPanSession()
+        transitionOverlay.hide()
 
         // 叠放时可能最小化过窗口：先全部还原，再飞回原位
         for index in cascadeMinimizedIndices where index < recordsToRestore.count {
@@ -702,6 +709,12 @@ final class WindowArranger {
         guard newPage != currentPageIndex else { return }
         let toOffset = -CGFloat(newPage) * contentPageWidth
         contentOffset = toOffset
+        // 毛玻璃先起，盖住窗口瞬移的那一下硬切
+        transitionOverlay.flash(
+            frame: appKitRect(from: bandFrame),
+            peak: config.switchFadeIntensity,
+            duration: config.switchFadeDuration
+        )
         // 直接切换：所有窗口瞬间到位（后台按 app 分队列写入，不阻塞主线程）
         var writes: [FrameWrite] = []
         for i in allRecords.indices {
@@ -1279,6 +1292,17 @@ final class WindowArranger {
             y: primary.frame.maxY - appKitRect.maxY,
             width: appKitRect.width,
             height: appKitRect.height
+        )
+    }
+
+    /// axRect 的逆变换：AX 坐标（左上原点、y 向下）回到 AppKit 屏幕坐标。
+    private func appKitRect(from axRect: CGRect) -> NSRect {
+        let primary = primaryScreen
+        return NSRect(
+            x: axRect.minX + primary.frame.minX,
+            y: primary.frame.maxY - axRect.maxY,
+            width: axRect.width,
+            height: axRect.height
         )
     }
 
