@@ -131,13 +131,10 @@ final class WindowArranger {
     private var contentPageWidth: CGFloat = 0
     private var contentOffset: CGFloat = 0
 
-    // 叠放整叠循环滚动
+    // 叠放：窗口固定在各自阶梯槽位，横滑只改选中项
     private var cascadeBaseFrames: [CGRect] = []
-    private var cascadeLastSetFrames: [CGRect] = []
-    /// 槽位 → 窗口下标；槽位越大 z 序越高（最后一个即当前前台）。
-    private var cascadeLayers: [Int] = []
-    private var cascadeStepX: CGFloat = 0
-    private var cascadeOffset: CGFloat = 0
+    /// 当前置顶的窗口下标。窗口位置不随切换变化，只有它变。
+    private var cascadeFocusIndex: Int = 0
 
     // 跟手模式状态
     private var panPhase: PanPhase = .idle
@@ -296,11 +293,9 @@ final class WindowArranger {
         // 叠放
         let frames = cascadeFrames(count: records.count, visibleAXFrame: visibleAXFrame)
         cascadeBaseFrames = frames
-        cascadeLastSetFrames = frames
         lastWrittenSizes = frames.map { $0.size }
         bandFrame = visibleAXFrame
-        cascadeLayers = Array(0..<records.count)
-        cascadeOffset = 0
+        cascadeFocusIndex = records.count - 1
         currentLayout = records
 
         let startFrames = records.map { CGRect(origin: $0.originalPosition, size: $0.originalSize) }
@@ -355,12 +350,10 @@ final class WindowArranger {
                 self.contentBaseFrames.removeAll()
                 self.lastSetFrames.removeAll()
                 self.cascadeBaseFrames.removeAll()
-                self.cascadeLastSetFrames.removeAll()
-                self.cascadeLayers.removeAll()
+                self.cascadeFocusIndex = 0
                 self.lastWrittenSizes.removeAll()
                 self.currentMode = nil
                 self.contentOffset = 0
-                self.cascadeOffset = 0
             }
         )
 
@@ -376,7 +369,6 @@ final class WindowArranger {
         motionDriver.stop()
         motionDriver.frameInterval = allRecords.count <= 16 ? 1.0 / 60.0 : 1.0 / 30.0
         contentOffset = 0
-        cascadeOffset = 0
         pendingInputDelta = 0
         panVelocity = 0
         gestureVelocity = 0
@@ -496,7 +488,9 @@ final class WindowArranger {
             dy = CGFloat(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * 10
         }
 
-        if config.interactionMode == .step {
+        // 叠放永远走逐组切换。跟手模式需要连续插值 z 序，而 macOS 根本不允许跨 app 改
+        // z 序，硬做只会变成每帧 raise + 移窗的抖动，所以这里直接不给它走跟手路径。
+        if config.interactionMode == .step || currentMode == .cascade {
             return handleStepScroll(event: event, phase: phase, dx: dx, dy: dy)
         }
         return handleFollowScroll(event: event, phase: phase, dx: dx, dy: dy)
@@ -683,24 +677,14 @@ final class WindowArranger {
         raiseWindowsAXOnly(currentLayout)
     }
 
+    /// 叠放切换：窗口一步都不动，只把选中的那扇窗调到最前。
+    ///
+    /// 排列时每扇窗就固定在自己的阶梯槽位上，之后横滑只改「当前选中谁」。
+    /// 不再整叠轮转、不再重写任何位置 —— 抖动的根源就是每次切换都把所有窗口挪一遍。
     private func performCascadeRoll(direction: Int) {
-        guard currentMode == .cascade, cascadeLayers.count > 1, !allRecords.isEmpty else { return }
-        let n = cascadeLayers.count
-        let layers = cascadeLayers
-        var newLayers = Array(repeating: 0, count: n)
-        // 整叠循环：所有窗口槽位 +direction（最上层退到最底，下一张升到最上）
-        for oldSlot in 0..<n {
-            newLayers[(oldSlot + direction + n) % n] = layers[oldSlot]
-        }
-        cascadeLayers = newLayers
-
-        var writes: [FrameWrite] = []
-        for recordIndex in allRecords.indices {
-            if let slot = newLayers.firstIndex(of: recordIndex) {
-                writes.append(FrameWrite(record: allRecords[recordIndex], index: recordIndex, frame: cascadeBaseFrames[slot]))
-            }
-        }
-        setFramesAsync(writes)
+        guard currentMode == .cascade, allRecords.count > 1 else { return }
+        let n = allRecords.count
+        cascadeFocusIndex = (cascadeFocusIndex + direction + n) % n
         applyCascadeZOrder()
     }
 
@@ -712,15 +696,9 @@ final class WindowArranger {
             mergePendingInput()
         case .inertia:
             panVelocity *= exp(-dt / config.inertiaTau)
-            let delta = panVelocity * CGFloat(dt)
-            if currentMode == .cascade {
-                cascadeOffset += delta
-                applyCascadePan()
-            } else {
-                contentOffset += delta
-                clampContentOffset()
-                applyContentOffset()
-            }
+            contentOffset += panVelocity * CGFloat(dt)
+            clampContentOffset()
+            applyContentOffset()
             if abs(panVelocity) < config.inertiaStopVelocity {
                 panPhase = .settling
                 let target = settleTargetOffset()
@@ -735,20 +713,10 @@ final class WindowArranger {
             let elapsed = ProcessInfo.processInfo.systemUptime - settle.startTime
             let progress = min(max(elapsed / settle.duration, 0), 1)
             let eased = easeOutBack(progress, overshoot: config.settleOvershoot)
-            let value = settle.startOffset + (settle.target - settle.startOffset) * eased
-            if currentMode == .cascade {
-                cascadeOffset = value
-                applyCascadePan()
-            } else {
-                contentOffset = value
-                applyContentOffset()
-            }
+            contentOffset = settle.startOffset + (settle.target - settle.startOffset) * eased
+            applyContentOffset()
             if progress >= 1 {
-                if currentMode == .cascade {
-                    cascadeOffset = settle.target
-                } else {
-                    contentOffset = settle.target
-                }
+                contentOffset = settle.target
                 finalizeSettle()
             }
         case .idle:
@@ -758,20 +726,13 @@ final class WindowArranger {
 
     private func mergePendingInput() {
         guard pendingInputDelta != 0 else { return }
-        if currentMode == .cascade {
-            cascadeOffset += pendingInputDelta
-            applyCascadePan()
-        } else {
-            contentOffset += pendingInputDelta
-            clampContentOffset()
-            applyContentOffset()
-        }
+        contentOffset += pendingInputDelta
+        clampContentOffset()
+        applyContentOffset()
         pendingInputDelta = 0
     }
 
-    private var activeOffset: CGFloat {
-        currentMode == .cascade ? cascadeOffset : contentOffset
-    }
+    private var activeOffset: CGFloat { contentOffset }
 
     private func startSettle() {
         panPhase = .settling
@@ -823,10 +784,7 @@ final class WindowArranger {
             currentLayout = currentPageRecords()
             raiseWindowsAXOnly(currentLayout)
         case .cascade:
-            if let frontIndex = cascadeLayers.last, frontIndex < allRecords.count {
-                raiseWindowsAXOnly([allRecords[frontIndex]])
-                allRecords[frontIndex].app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            }
+            break   // 叠放不走跟手驱动
         case nil:
             break
         }
@@ -861,98 +819,18 @@ final class WindowArranger {
         }
     }
 
-    // 跟手叠放：整叠沿槽位循环滚动
-    private func applyCascadePan() {
-        guard currentMode == .cascade,
-              !allRecords.isEmpty,
-              cascadeBaseFrames.count == allRecords.count,
-              cascadeLayers.count == allRecords.count,
-              cascadeStepX > 0 else { return }
-
-        let pitch = cascadeStepX
-
-        while cascadeOffset >= pitch {
-            cascadeOffset -= pitch
-            rollCascade(dir: 1)
-        }
-        while cascadeOffset <= -pitch {
-            cascadeOffset += pitch
-            rollCascade(dir: -1)
-        }
-
-        let dir = cascadeOffset > 0 ? 1 : -1
-        let progress = min(abs(cascadeOffset) / pitch, 1)
-        guard progress > 0 else { return }
-
-        for recordIndex in allRecords.indices {
-            let fromSlot = cascadeLayers.firstIndex(of: recordIndex) ?? recordIndex
-            let toSlot = (fromSlot + dir + allRecords.count) % allRecords.count
-            let frame = lerpFrame(cascadeBaseFrames[fromSlot], cascadeBaseFrames[toSlot], progress)
-            applyCascadeFrame(recordIndex: recordIndex, frame: frame)
-        }
-    }
-
-    private func applyCascadeFrame(recordIndex: Int, frame: CGRect) {
-        guard recordIndex < cascadeLastSetFrames.count else { return }
-        guard deltaExceeds(cascadeLastSetFrames[recordIndex], frame, config.epsilon) else { return }
-        cascadeLastSetFrames[recordIndex] = frame
-        setAXPositionOnly(allRecords[recordIndex], frame.origin)
-    }
-
-    private func rollCascade(dir: Int) {
-        let n = cascadeLayers.count
-        guard n > 1 else { return }
-        let layers = cascadeLayers
-        var newLayers = Array(repeating: 0, count: n)
-        for oldSlot in 0..<n {
-            newLayers[(oldSlot + dir + n) % n] = layers[oldSlot]
-        }
-        cascadeLayers = newLayers
-        applyCascadeZOrder()
-    }
-
-    /// 让叠放的 z 序跟上槽位顺序：当前置顶窗口要真正沉到最底。
+    /// 把当前选中的窗口调到最前。
     ///
-    /// 按槽位从底往顶依次 AXRaise，最后再激活新前台的 app，让它留在最上。
-    /// 只有一次 activate，不做逐 app 激活，避免连续划动时的焦点抖动和排队积压。
-    /// 跨 app 的 z 序 macOS 未必完全服从 AXRaise，所以顺带把实际顺序写进日志核对。
+    /// macOS 只允许「把某个 app 整体激活到最前」，不允许任意编排跨 app 的 z 序，
+    /// 所以这里只用这一个可靠动作：激活选中窗口所属的 app，再在 app 内部 raise 到它那扇窗。
+    /// 其余窗口一概不碰 —— 碰了就是之前那种连环 raise 抖动。
     private func applyCascadeZOrder() {
-        let layers = cascadeLayers
         let records = allRecords
-        guard layers.count > 1, let frontIndex = layers.last, frontIndex < records.count else { return }
-        let frontRecord = records[frontIndex]
-
-        zOrderQueue.async {
-            for slot in layers.indices.dropLast() {
-                let recordIndex = layers[slot]
-                guard recordIndex < records.count else { continue }
-                AXUIElementPerformAction(records[recordIndex].element, "AXRaise" as CFString)
-            }
-            DispatchQueue.main.async {
-                frontRecord.app.activate(options: [.activateIgnoringOtherApps])
-                AXUIElementPerformAction(frontRecord.element, "AXRaise" as CFString)
-                // 等窗口服务器落定后再读，否则读到的是切换中途的顺序
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    self?.logCascadeZOrder(expected: layers, records: records)
-                }
-            }
-        }
-    }
-
-    /// 把实际 z 序与期望顺序写进日志，用来判断 raise 是否真的生效。
-    private func logCascadeZOrder(expected: [Int], records: [WindowRecord]) {
-        let want = expected.reversed().map { records[$0].app.localizedName ?? "?" }
-        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return }
-        let pids = Set(records.map { $0.app.processIdentifier })
-        var got: [String] = []
-        for entry in info {
-            guard let pidNumber = entry[kCGWindowOwnerPID as String] as? NSNumber,
-                  pids.contains(pid_t(pidNumber.int32Value)) else { continue }
-            if let layer = entry[kCGWindowLayer as String] as? Int, layer != 0 { continue }
-            got.append((entry[kCGWindowOwnerName as String] as? String) ?? "?")
-        }
-        logTrace("z want[front→back]: \(want.joined(separator: " > "))")
-        logTrace("z  got[front→back]: \(got.joined(separator: " > "))")
+        guard cascadeFocusIndex >= 0, cascadeFocusIndex < records.count else { return }
+        let target = records[cascadeFocusIndex]
+        target.app.activate(options: [.activateIgnoringOtherApps])
+        AXUIElementPerformAction(target.element, "AXRaise" as CFString)
+        currentLayout = [target]
     }
 
     // MARK: - 页面索引
@@ -1079,21 +957,11 @@ final class WindowArranger {
         if currentMode == .tile, index < contentBaseFrames.count {
             return contentBaseFrames[index].offsetBy(dx: contentOffset, dy: 0)
         }
-        if currentMode == .cascade,
-           let slot = cascadeLayers.firstIndex(of: index),
-           slot < cascadeBaseFrames.count {
-            return cascadeBaseFrames[slot]
+        // 叠放的窗口固定在自己的槽位，下标即槽位
+        if currentMode == .cascade, index < cascadeBaseFrames.count {
+            return cascadeBaseFrames[index]
         }
         return originalFrame(record)
-    }
-
-    private func lerpFrame(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {
-        CGRect(
-            x: a.minX + (b.minX - a.minX) * t,
-            y: a.minY + (b.minY - a.minY) * t,
-            width: a.width + (b.width - a.width) * t,
-            height: a.height + (b.height - a.height) * t
-        )
     }
 
     private func deltaExceeds(_ lhs: CGRect, _ rhs: CGRect, _ eps: CGFloat) -> Bool {
@@ -1303,7 +1171,6 @@ final class WindowArranger {
 
         let stepX = min(38, maxStepX / denominator)
         let stepY = min(30, maxStepY / denominator)
-        cascadeStepX = stepX
 
         return (0..<count).map { index in
             CGRect(
