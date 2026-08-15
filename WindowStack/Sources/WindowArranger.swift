@@ -131,10 +131,10 @@ final class WindowArranger {
     private var contentPageWidth: CGFloat = 0
     private var contentOffset: CGFloat = 0
 
-    // 叠放：窗口固定在各自阶梯槽位，横滑只改选中项
+    // 叠放：窗口固定在阶梯槽位；横滑最小化最上层，露出下层
     private var cascadeBaseFrames: [CGRect] = []
-    /// 当前置顶的窗口下标。窗口位置不随切换变化，只有它变。
-    private var cascadeFocusIndex: Int = 0
+    /// 我们最小化过的窗口下标（栈：末尾 = 最近一次）。反滑按此顺序还原。
+    private var cascadeMinimizedIndices: [Int] = []
 
     // 跟手模式状态
     private var panPhase: PanPhase = .idle
@@ -295,7 +295,7 @@ final class WindowArranger {
         cascadeBaseFrames = frames
         lastWrittenSizes = frames.map { $0.size }
         bandFrame = visibleAXFrame
-        cascadeFocusIndex = records.count - 1
+        cascadeMinimizedIndices.removeAll()
         currentLayout = records
 
         let startFrames = records.map { CGRect(origin: $0.originalPosition, size: $0.originalSize) }
@@ -326,16 +326,23 @@ final class WindowArranger {
 
         stopPanSession()
 
+        // 叠放时可能最小化过窗口：先全部还原，再飞回原位
+        for index in cascadeMinimizedIndices where index < recordsToRestore.count {
+            setAXMinimized(recordsToRestore[index], false)
+        }
+        cascadeMinimizedIndices.removeAll()
+
         for record in recordsToRestore where !visibleRecords.contains(where: { isSameWindow($0, record) }) {
             setAXFrame(record, originalFrame(record))
         }
 
         // 起点用排列时的已知目标位置（不依赖 AX 读，避免读取失败导致"恢复不动"）
-        let startFrames = visibleRecords.map { currentArrangedFrame($0) }
-        let targetFrames = visibleRecords.map { originalFrame($0) }
+        let animateRecords = visibleRecords.isEmpty ? recordsToRestore : visibleRecords
+        let startFrames = animateRecords.map { currentArrangedFrame($0) }
+        let targetFrames = animateRecords.map { originalFrame($0) }
 
         animator.animate(
-            records: visibleRecords,
+            records: animateRecords,
             startFrames: startFrames,
             targetFrames: targetFrames,
             duration: 0.42,
@@ -350,7 +357,7 @@ final class WindowArranger {
                 self.contentBaseFrames.removeAll()
                 self.lastSetFrames.removeAll()
                 self.cascadeBaseFrames.removeAll()
-                self.cascadeFocusIndex = 0
+                self.cascadeMinimizedIndices.removeAll()
                 self.lastWrittenSizes.removeAll()
                 self.currentMode = nil
                 self.contentOffset = 0
@@ -636,7 +643,7 @@ final class WindowArranger {
 
     // MARK: - 切换分发
 
-    /// direction：+1 = 平铺下一页 / 叠放下层升上；-1 = 上一页 / 上层降下。
+    /// direction：+1 = 平铺下一页 / 叠放最小化最上层；-1 = 上一页 / 还原刚最小化的窗口。
     private var switchTimes: [TimeInterval] = []
 
     private func performSwitch(direction: Int) {
@@ -677,15 +684,55 @@ final class WindowArranger {
         raiseWindowsAXOnly(currentLayout)
     }
 
-    /// 叠放切换：窗口一步都不动，只把选中的那扇窗调到最前。
+    /// 叠放切换：正滑最小化最上层（露出下层），反滑还原刚最小化的那扇。
     ///
-    /// 排列时每扇窗就固定在自己的阶梯槽位上，之后横滑只改「当前选中谁」。
-    /// 不再整叠轮转、不再重写任何位置 —— 抖动的根源就是每次切换都把所有窗口挪一遍。
+    /// 最小化是公开 API，跨 app 可靠；比改 z 序稳得多，也不会抖。
+    /// 留最后一扇不最小化，避免桌面空着。
     private func performCascadeRoll(direction: Int) {
         guard currentMode == .cascade, allRecords.count > 1 else { return }
-        let n = allRecords.count
-        cascadeFocusIndex = (cascadeFocusIndex + direction + n) % n
-        applyCascadeZOrder()
+        if direction > 0 {
+            minimizeCascadeFront()
+        } else {
+            restoreLastCascadeMinimized()
+        }
+    }
+
+    private func cascadeVisibleIndices() -> [Int] {
+        allRecords.indices.filter { !cascadeMinimizedIndices.contains($0) }
+    }
+
+    private func minimizeCascadeFront() {
+        let visible = cascadeVisibleIndices()
+        guard visible.count > 1, let front = visible.last else {
+            logTrace("cascade minimize skipped remaining=\(visible.count)")
+            return
+        }
+        let record = allRecords[front]
+        setAXMinimized(record, true)
+        cascadeMinimizedIndices.append(front)
+        let remaining = Array(visible.dropLast())
+        currentLayout = remaining.map { allRecords[$0] }
+        if let next = remaining.last {
+            allRecords[next].app.activate(options: [.activateIgnoringOtherApps])
+            AXUIElementPerformAction(allRecords[next].element, "AXRaise" as CFString)
+        }
+        logTrace("cascade minimize idx=\(front) title=\(record.title) remaining=\(remaining.count)")
+    }
+
+    private func restoreLastCascadeMinimized() {
+        guard let front = cascadeMinimizedIndices.popLast(), front < allRecords.count else {
+            logTrace("cascade restore skipped empty")
+            return
+        }
+        let record = allRecords[front]
+        setAXMinimized(record, false)
+        if front < cascadeBaseFrames.count {
+            setAXFrame(record, cascadeBaseFrames[front])
+        }
+        record.app.activate(options: [.activateIgnoringOtherApps])
+        AXUIElementPerformAction(record.element, "AXRaise" as CFString)
+        currentLayout = cascadeVisibleIndices().map { allRecords[$0] }
+        logTrace("cascade restore idx=\(front) title=\(record.title)")
     }
 
     // MARK: - 跟手渲染驱动（30/60Hz）
@@ -817,20 +864,6 @@ final class WindowArranger {
             lastSetFrames[i] = frame
             setAXPositionOnly(allRecords[i], frame.origin)
         }
-    }
-
-    /// 把当前选中的窗口调到最前。
-    ///
-    /// macOS 只允许「把某个 app 整体激活到最前」，不允许任意编排跨 app 的 z 序，
-    /// 所以这里只用这一个可靠动作：激活选中窗口所属的 app，再在 app 内部 raise 到它那扇窗。
-    /// 其余窗口一概不碰 —— 碰了就是之前那种连环 raise 抖动。
-    private func applyCascadeZOrder() {
-        let records = allRecords
-        guard cascadeFocusIndex >= 0, cascadeFocusIndex < records.count else { return }
-        let target = records[cascadeFocusIndex]
-        target.app.activate(options: [.activateIgnoringOtherApps])
-        AXUIElementPerformAction(target.element, "AXRaise" as CFString)
-        currentLayout = [target]
     }
 
     // MARK: - 页面索引
@@ -1255,6 +1288,14 @@ final class WindowArranger {
         if elapsed > 0.15 {
             logTrace("setAXFrame slow pid=\(record.app.processIdentifier) \(Int(elapsed * 1000))ms")
         }
+    }
+
+    private func setAXMinimized(_ record: WindowRecord, _ minimized: Bool) {
+        AXUIElementSetAttributeValue(
+            record.element,
+            kAXMinimizedAttribute as CFString,
+            minimized ? kCFBooleanTrue : kCFBooleanFalse
+        )
     }
 
     private func setAXPositionOnly(_ record: WindowRecord, _ point: CGPoint) {
