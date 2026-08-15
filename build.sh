@@ -14,7 +14,9 @@ KEYCHAIN="$PWD/build/keychain/windowstack.keychain"
 
 mkdir -p build/keychain
 
-if ! security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$CERT_NAME"; then
+# 不加 -v：-v 只列受信任的身份，而 add-trusted-cert 需要 GUI 授权，
+# 走 SSH 装机时拿不到。签名本身不要求证书受信任，有私钥就够了。
+if ! security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$CERT_NAME"; then
   security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
   security create-keychain -p '' "$KEYCHAIN"
   security unlock-keychain -p '' "$KEYCHAIN"
@@ -34,7 +36,9 @@ if ! security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q 
   security import build/keychain/windowstack.key.pem -k "$KEYCHAIN" -T /usr/bin/codesign -T /usr/bin/pluginkit
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$KEYCHAIN"
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$KEYCHAIN" >/dev/null 2>&1 || true
-  security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" build/keychain/windowstack.crt.pem
+  # 需要 GUI 授权，SSH 下必然失败；信任只影响验签展示，不影响签名和运行
+  security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" build/keychain/windowstack.crt.pem \
+    || echo "warn: 证书未加入信任（需要图形界面授权），不影响签名与运行"
 fi
 
 rm -rf "$APP_DIR"
