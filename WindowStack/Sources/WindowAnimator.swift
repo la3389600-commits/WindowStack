@@ -13,9 +13,12 @@ final class TransitionOverlay {
     private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.38, 0, 0.5, 1)
 
     /// 揭开前至少停留这么久，避免快到看不清的一闪
-    private static let minHold: TimeInterval = 0.04
+    private static let minHold: TimeInterval = 0.06
+    /// AX 写入返回不等于 app 已经把窗口重绘到新位置，写完再多压一会儿，
+    /// 否则遮挡层揭开时还能瞟到窗口在归位。
+    private static let settleHold: TimeInterval = 0.18
     /// 某个 app 的 AX 写入拖太久时的封顶，玻璃不能一直挂着
-    private static let maxHold: TimeInterval = 0.22
+    private static let maxHold: TimeInterval = 0.55
 
     private var window: NSWindow?
     private var glass: NSVisualEffectView?
@@ -94,7 +97,12 @@ final class TransitionOverlay {
             guard !covered else { return }
             covered = true
             guard let self, gen == self.generation else { return }
-            atPeak { writesDone = true; maybeReveal() }
+            atPeak {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleHold) {
+                    writesDone = true
+                    maybeReveal()
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.minHold) {
                 holdPassed = true
                 maybeReveal()

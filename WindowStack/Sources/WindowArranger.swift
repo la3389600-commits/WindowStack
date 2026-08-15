@@ -70,12 +70,12 @@ struct PanConfig: Codable {
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
     // 1.0 时窗口交换那一刻被完全盖住，跳变才真的看不见；往下调会重新露出跳变
     var switchFadeIntensity: CGFloat = 1.0      // 切换峰值的遮挡强度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 0.95 // 毛玻璃淡入淡出总时长
-    var switchFadeBrightness: CGFloat = 0.6     // 遮挡层颜色，0 = 中性灰，1 = 纯白
+    var switchFadeDuration: TimeInterval = 1.3  // 毛玻璃淡入淡出总时长
+    var switchFadeBrightness: CGFloat = 1.0     // 遮挡层颜色，0 = 中性灰，1 = 纯白
 
     /// 过渡观感这组参数每调一次版就 +1；存档里比它小就把这几项重置回新默认，
     /// 免得用户一直停在旧手感上，也省掉一堆一次性的迁移判断。
-    static let currentFadeStyleRevision = 4
+    static let currentFadeStyleRevision = 5
     var fadeStyleRevision = PanConfig.currentFadeStyleRevision
 
     // 跟手模式
