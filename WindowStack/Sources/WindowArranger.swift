@@ -578,7 +578,7 @@ final class WindowArranger {
         }
 
         // 纵向主导的滚动放行，避免劫持其他 app 的正常滚动
-        guard abs(dx) > abs(dy), abs(dx) >= 0.5, isOverBand(event) else { return false }
+        guard abs(dx) > abs(dy), abs(dx) >= 0.5, isOverDesktopEmpty(event) else { return false }
 
         // 鼠标滚轮没有 ended 相位，靠停顿补一个手势边界
         scheduleStepIdleReset()
@@ -621,7 +621,7 @@ final class WindowArranger {
     private func handleFollowScroll(event: CGEvent, phase: Int64, dx: CGFloat, dy: CGFloat) -> Bool {
         switch phase {
         case Int64(CGScrollPhase.began.rawValue):
-            guard isOverBand(event) else { return false }
+            guard isOverDesktopEmpty(event) else { return false }
             beginGesture()
             if dx != 0 { accumulateGesture(dx) }
             return true
@@ -641,19 +641,38 @@ final class WindowArranger {
         }
 
         // legacy 滚轮（无相位）：光标在排列区域内且横向主导才响应
-        guard abs(dx) >= 0.5, abs(dx) > abs(dy), isOverBand(event) else { return false }
+        guard abs(dx) >= 0.5, abs(dx) > abs(dy), isOverDesktopEmpty(event) else { return false }
         handleLegacyWheel(rawDx: dx)
         return true
     }
 
-    /// 光标是否位于排列区域内，避免劫持其他 app 的横向滚动。
-    private func isOverBand(_ event: CGEvent) -> Bool {
-        let location = event.location
-        let margin: CGFloat = 24
-        return location.x >= bandFrame.minX - margin &&
-            location.x <= bandFrame.maxX + margin &&
-            location.y >= bandFrame.minY - margin &&
-            location.y <= bandFrame.maxY + margin
+    /// 光标是否位于"桌面空白区域"（无任何窗口覆盖）。
+    /// 鼠标在窗口上时双指滑动交给窗口自己处理（避免冲突），只在桌面空白处滑动才触发切换。
+    /// 注意：不能依赖 scrollWheel 事件的 event.location（触控板手势该字段常返回 (0,0)），
+    /// 改用实时鼠标位置 NSEvent.mouseLocation（AppKit 左下原点）转成 Quartz 左上原点坐标。
+    private func isOverDesktopEmpty(_ event: CGEvent) -> Bool {
+        let appKit = NSEvent.mouseLocation
+        let primaryHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.maxY ?? 0
+        let location = CGPoint(x: appKit.x, y: primaryHeight - appKit.y)
+        return computeOverDesktopEmpty(location)
+    }
+
+    private func computeOverDesktopEmpty(_ location: CGPoint) -> Bool {
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return true
+        }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for w in info {
+            guard let pid = w[kCGWindowOwnerPID as String] as? NSNumber, pid.int32Value != ownPID else { continue }
+            if let layer = w[kCGWindowLayer as String] as? Int, layer != 0 { continue }
+            if let alpha = w[kCGWindowAlpha as String] as? Double, alpha <= 0.01 { continue }
+            guard let b = w[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = b["X"], let y = b["Y"], let width = b["Width"], let height = b["Height"] else { continue }
+            if CGRect(x: x, y: y, width: width, height: height).contains(location) {
+                return false   // 光标在某个窗口上
+            }
+        }
+        return true   // 桌面空白
     }
 
     private func beginGesture() {

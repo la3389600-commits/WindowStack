@@ -28,6 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // 失活再激活后重新注册热键，防止偶尔失效
+        registerAllHotKeys()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // 停掉事件拦截与动画驱动，保证正常退出
         arranger.shutdown()
