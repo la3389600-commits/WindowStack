@@ -36,9 +36,11 @@ if ! security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$C
   security import build/keychain/windowstack.key.pem -k "$KEYCHAIN" -T /usr/bin/codesign -T /usr/bin/pluginkit
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$KEYCHAIN"
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$KEYCHAIN" >/dev/null 2>&1 || true
-  # 需要 GUI 授权，SSH 下必然失败；信任只影响验签展示，不影响签名和运行
-  security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" build/keychain/windowstack.crt.pem \
-    || echo "warn: 证书未加入信任（需要图形界面授权），不影响签名与运行"
+  # 需要 GUI 授权，CI 中会一直等待；信任只影响验签展示，不影响签名和运行。
+  if [[ "${CI:-}" != "true" ]]; then
+    security add-trusted-cert -d -r trustRoot -k "$KEYCHAIN" build/keychain/windowstack.crt.pem \
+      || echo "warn: 证书未加入信任（需要图形界面授权），不影响签名与运行"
+  fi
 fi
 
 # 自建钥匙串在新的 SSH/终端会话里会重新锁上；不主动解锁时
