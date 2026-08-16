@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerAllHotKeys()
         setupStatusItem()
         showMainWindow()
+        // 注册结果要等主窗口建好才有地方显示
+        reportHotKeyStatus()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -98,10 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let old = hotKeyIDs[action] {
             HotKeyManager.shared.unregister(old)
         }
-        let id = HotKeyManager.shared.register(keyCode: spec.keyCode, modifiers: spec.modifiers) { [weak self] in
+        hotKeyIDs[action] = HotKeyManager.shared.register(keyCode: spec.keyCode, modifiers: spec.modifiers) { [weak self] in
             self?.performHotKeyAction(action)
         }
-        hotKeyIDs[action] = id
+        reportHotKeyStatus()
     }
 
     private func registerAllHotKeys() {
@@ -109,11 +111,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeyIDs.removeAll()
         for action in HotKeyAction.allCases {
             guard let spec = hotKeys[action] else { continue }
-            let id = HotKeyManager.shared.register(keyCode: spec.keyCode, modifiers: spec.modifiers) { [weak self] in
+            hotKeyIDs[action] = HotKeyManager.shared.register(keyCode: spec.keyCode, modifiers: spec.modifiers) { [weak self] in
                 self?.performHotKeyAction(action)
             }
-            hotKeyIDs[action] = id
         }
+        reportHotKeyStatus()
+    }
+
+    /// RegisterEventHotKey 失败（组合被别的 app 占了）时 register 返回 nil，
+    /// 以前这个 nil 直接写进字典就等于删 key，快捷键悄无声息地不响应。现在明确报出来。
+    private func reportHotKeyStatus() {
+        var status: [HotKeyAction: Bool] = [:]
+        for action in HotKeyAction.allCases where hotKeys[action] != nil {
+            status[action] = hotKeyIDs[action] != nil
+        }
+        settingsController?.updateHotKeyStatus(status)
+        let failed = status.filter { !$0.value }.keys
+        guard !failed.isEmpty else { return }
+        let names = failed.map { hotKeys[$0]?.display ?? "" }.joined(separator: "、")
+        statusLabel?.stringValue = "快捷键 \(names) 被其他 app 占用，未生效"
     }
 
     private func performHotKeyAction(_ action: HotKeyAction) {
@@ -390,17 +406,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.arranger.config = config
                 self.saveConfig(config)
             }
+            controller.onPreviewLayout = { [weak self] config in
+                guard let self else { return }
+                // 只改运行时的一份，不落盘：不点「应用」就退出设置，磁盘上还是老值
+                self.arranger.config = config
+                self.previewLayout()
+            }
+            controller.onApplyLayout = { [weak self] config in
+                guard let self else { return }
+                self.arranger.config = config
+                self.saveConfig(config)
+                self.previewLayout()
+            }
             controller.onResetDefaults = { [weak self] in
                 self?.resetSettings()
             }
             settingsController = controller
         }
         settingsController?.show(config: arranger.config, hotKeys: hotKeys)
+        reportHotKeyStatus()
     }
 
     @objc private func openAccessibilitySettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
+    }
+
+    /// 用当前（可能还没保存的）尺寸参数重排一次，让改动看得见。
+    /// 重排会把别的 app 提到前面，设置窗口会被压下去，稍后再抬回来，方便接着调。
+    private func previewLayout() {
+        guard WindowArranger.isTrusted else {
+            presentAccessibilityPermission()
+            return
+        }
+        arrangeWindows(mode: arranger.activeMode ?? .tile)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let window = self?.settingsController?.window, window.isVisible else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func arrangeWindows(mode: ArrangementMode) {

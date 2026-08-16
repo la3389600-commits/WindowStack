@@ -1,10 +1,11 @@
 import AppKit
 import CoreVideo
+import QuartzCore
 
-/// 切换时掠过一层毛玻璃，给"直接切换"加一点柔和的过渡感。
+/// 切换时掠过一层黑色渐变，把窗口瞬移那一下完全盖住。
 ///
 /// 改别的 app 的窗口透明度需要关 SIP 并往 Dock 注入代码（yabai 就是这么做的），
-/// 这里换个思路：叠一层我们自己的无边框透明窗，用 NSVisualEffectView 实时虚化背后内容，
+/// 这里换个思路：叠一层我们自己的无边框窗，里面是一块跟着滑动方向横扫的黑色渐变，
 /// 淡入再淡出。全程公开 API，不需要额外权限，也不碰任何别人的窗口。
 final class TransitionOverlay {
     /// 两端都用对称的缓入缓出：不透明度变化摊得更均匀，
@@ -21,22 +22,22 @@ final class TransitionOverlay {
     private static let maxHold: TimeInterval = 0.55
 
     private var window: NSWindow?
-    private var glass: NSVisualEffectView?
-    private var tint: NSView?
+    private var veil: NSView?
+    private var veilGradient: CAGradientLayer?
     private var generation: UInt = 0
     private var showing = false
 
     /// - Parameters:
     ///   - frame: AppKit 屏幕坐标下的覆盖区域
     ///   - peak: 最浓时的不透明度，0 表示关闭特效
-    ///   - brightness: 白色提亮层的浓度，0 表示只虚化不提亮
-    ///   - direction: 滑动方向，+1 / -1，玻璃会朝同方向横扫，0 表示不带方向
-    ///   - atPeak: 玻璃升到最浓时回调。窗口切换放这里才会被盖住；
-    ///     切换真正落位后要调一次传入的闭包，玻璃才开始揭开。
+    ///   - darkness: 黑色深度，0 为深灰，1 为纯黑
+    ///   - direction: 滑动方向，+1 / -1，渐变会朝同方向横扫，0 表示不带方向
+    ///   - atPeak: 遮挡升到最浓时回调。窗口切换放这里才会被盖住；
+    ///     切换真正落位后要调一次传入的闭包，遮挡才开始揭开。
     func flash(frame: NSRect,
                peak: CGFloat,
                duration: TimeInterval,
-               brightness: CGFloat,
+               darkness: CGFloat,
                direction: Int,
                atPeak: @escaping (@escaping () -> Void) -> Void) {
         guard peak > 0.01, duration > 0.01, frame.width > 1, frame.height > 1 else {
@@ -54,20 +55,32 @@ final class TransitionOverlay {
         overlay.orderFrontRegardless()
         showing = true
 
-        // 玻璃比窗口宽出 travel，横扫时两侧才不会露边
+        // 渐变层比窗口宽出 travel，横扫时两侧才不会露边
         let travel = max(12, min(frame.width * 0.05, 72)) * CGFloat(direction == 0 ? 0 : 1)
         let sign = CGFloat(direction >= 0 ? 1 : -1)
-        guard let glass else { atPeak({}); return }
-        glass.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
-        glass.setFrameOrigin(NSPoint(x: -travel + travel * (resuming ? 0 : sign), y: 0))
-        // 遮挡层本身是不透明实色，靠 alpha 跟着爬坡：爬到顶时窗口交换被彻底盖住，
-        // 爬坡途中半透明，底下的虚化和横扫照样看得见。
-        guard let tint else { atPeak({}); return }
-        tint.frame = NSRect(origin: .zero, size: frame.size)
-        tint.layer?.backgroundColor = NSColor(
-            white: 0.55 + 0.45 * max(0, min(1, brightness)), alpha: 1
-        ).cgColor
-        if !resuming { tint.alphaValue = 0 }
+        // 整层是不透明的黑色渐变，靠 view alpha 跟着时间爬坡：
+        // 爬到顶时窗口交换被彻底盖住，爬坡途中半透明，能看见渐变在横扫。
+        guard let veil, let gradient = veilGradient else { atPeak({}); return }
+        veil.frame = NSRect(x: -travel, y: 0, width: frame.width + travel * 2, height: frame.height)
+        veil.setFrameOrigin(NSPoint(x: -travel + travel * (resuming ? 0 : sign), y: 0))
+
+        // 两端更黑、中间略亮，横扫时这条亮带扫过去就是方向感的来源
+        let clamped = max(0, min(1, darkness))
+        let edge = 0.22 * (1 - clamped)
+        let center = edge + 0.12
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradient.frame = veil.bounds
+        gradient.colors = [
+            NSColor(white: edge, alpha: 1).cgColor,
+            NSColor(white: center, alpha: 1).cgColor,
+            NSColor(white: edge, alpha: 1).cgColor
+        ]
+        gradient.locations = [0, 0.5, 1]
+        gradient.startPoint = CGPoint(x: 0, y: 0.5)
+        gradient.endPoint = CGPoint(x: 1, y: 0.5)
+        CATransaction.commit()
+        if !resuming { veil.alphaValue = 0 }
 
         var writesDone = false
         var holdPassed = false
@@ -76,14 +89,14 @@ final class TransitionOverlay {
         let reveal: () -> Void = { [weak self] in
             guard !revealed else { return }
             revealed = true
-            guard let self, gen == self.generation, let glass = self.glass else { return }
+            guard let self, gen == self.generation else { return }
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = duration * 0.58
                 context.timingFunction = Self.revealCurve
                 context.allowsImplicitAnimation = true
                 overlay.animator().alphaValue = 0
-                tint.animator().alphaValue = 0
-                glass.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
+                veil.animator().alphaValue = 0
+                veil.animator().setFrameOrigin(NSPoint(x: -travel - travel * sign, y: 0))
             }, completionHandler: {
                 guard gen == self.generation else { return }
                 self.showing = false
@@ -113,7 +126,7 @@ final class TransitionOverlay {
 
         guard !resuming else {
             overlay.alphaValue = peak
-            tint.alphaValue = 1
+            veil.alphaValue = 1
             onCovered()
             return
         }
@@ -127,8 +140,8 @@ final class TransitionOverlay {
             context.timingFunction = Self.coverCurve
             context.allowsImplicitAnimation = true
             overlay.animator().alphaValue = peak
-            tint.animator().alphaValue = 1
-            glass.animator().setFrameOrigin(NSPoint(x: -travel, y: 0))
+            veil.animator().alphaValue = 1
+            veil.animator().setFrameOrigin(NSPoint(x: -travel, y: 0))
         }, completionHandler: onCovered)
     }
 
@@ -153,32 +166,23 @@ final class TransitionOverlay {
         created.ignoresMouseEvents = true
         created.level = .floating
         created.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        // 钉死浅色外观：跟随系统的话深色模式下材质会变成深灰，看着像蒙了层脏东西
-        created.appearance = NSAppearance(named: .aqua)
 
-        // 圆角放在容器上，玻璃在里面横扫时圆角不会跟着跑
+        // 圆角放在容器上，渐变在里面横扫时圆角不会跟着跑
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = 14
         container.layer?.masksToBounds = true
         container.autoresizingMask = [.width, .height]
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        container.addSubview(effect)
-
-        // 提亮层压在虚化之上，把灰底往白里拉
-        let white = NSView()
-        white.wantsLayer = true
-        white.autoresizingMask = [.width, .height]
-        container.addSubview(white)
+        let black = NSView()
+        black.wantsLayer = true
+        let gradient = CAGradientLayer()
+        black.layer = gradient
+        container.addSubview(black)
 
         created.contentView = container
-        glass = effect
-        tint = white
+        veil = black
+        veilGradient = gradient
         window = created
         return created
     }

@@ -1,3 +1,4 @@
 dist/
 build/keychain/
+build/WindowStack.iconset/
 .DS_Store

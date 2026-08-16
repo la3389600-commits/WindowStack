@@ -41,6 +41,11 @@ if ! security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$C
     || echo "warn: 证书未加入信任（需要图形界面授权），不影响签名与运行"
 fi
 
+# 自建钥匙串在新的 SSH/终端会话里会重新锁上；不主动解锁时
+# codesign 只会报含糊的 errSecInternalComponent。
+security unlock-keychain -p '' "$KEYCHAIN"
+security set-keychain-settings -lut 21600 "$KEYCHAIN"
+
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$EXT_DIR/Contents/MacOS"
 
@@ -48,6 +53,7 @@ swiftc -O \
   -target "${ARCH}-apple-macos13.0" \
   -framework AppKit \
   -framework CoreVideo \
+  -framework QuartzCore \
   -framework ApplicationServices \
   -framework Carbon \
   "$SOURCE_DIR/main.swift" \

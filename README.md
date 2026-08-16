@@ -1,59 +1,99 @@
-# 窗口叠放
+# WindowStack · 窗口叠放
 
-一个 macOS 窗口整理小工具：默认把当前屏幕上可见的普通应用窗口平铺成相同尺寸；也保留叠放模式。双击打开后会出现控制面板，菜单栏图标和桌面右键菜单都可以一键操作。
+一款原生 macOS 窗口整理工具，支持平铺、叠放、触控板横滑切换及一键恢复。项目使用 Swift、AppKit 与公开的 Accessibility API 实现，不注入其他进程，也不要求关闭 SIP。
+
+## 功能
+
+- **平铺模式**：将当前屏幕的普通窗口统一尺寸并横向排列，窗口较多时自动分页。
+- **叠放模式**：窗口按对角线层叠，通过横滑切换前台窗口。
+- **两种交互手感**：逐组切换，或跟手滑动 + 惯性 + 吸附。
+- **流畅动画**：由显示刷新率驱动动画；Accessibility 写入按应用异步排队，避免慢应用阻塞主线程。
+- **自定义尺寸**：平铺和叠放分别设置宽高比例，支持数值输入、预览与应用。
+- **可调过渡**：逐组切换使用纯黑方向渐变遮挡窗口交换。
+- **全局快捷键**：默认支持平铺、叠放和恢复，也可自行修改。
+- **Finder 扩展**：可以从桌面右键菜单直接执行窗口操作。
+- **隐私友好**：不联网、不收集数据，所有设置只保存在本机。
+
+## 系统要求
+
+- macOS 13 Ventura 或更高版本
+- 辅助功能权限（用于读取、移动和调整其他应用的窗口）
+- 从源码构建需要 Xcode Command Line Tools
+
+## 默认快捷键
+
+| 操作 | 快捷键 |
+| --- | --- |
+| 平铺窗口 | `⇧⌘T` |
+| 叠放窗口 | `⇧⌘C` |
+| 恢复布局 | `⇧⌘R` |
+
+如果快捷键已被其他应用占用，控制面板会显示注册失败提示。
 
 ## 使用
 
-1. 双击 `dist/WindowStack.app` 启动，会出现“窗口叠放”控制面板。
-2. 第一次执行平铺/叠放时，如果系统弹出辅助功能授权提示，请到“系统设置 > 隐私与安全性 > 辅助功能”勾选 `WindowStack`。
-3. 点击“平铺窗口”，或左键菜单栏图标，即可把当前屏幕窗口平铺成相同尺寸。
-4. 也可以直接在桌面空白处右键，选择“平铺窗口 / 叠放窗口 / 恢复布局”。
-5. 点击“恢复布局”或右键菜单栏图标可以恢复上次布局；右键菜单里也可以退出。
-6. 平铺后如果窗口横向排满一屏，使用触控板横向滑动或鼠标横向滚轮即可左右平移；点“恢复布局”会退出横向滚动模式。
+1. 构建应用，或取得可信来源提供的构建产物。
+2. 将 `WindowStack.app` 移到 `/Applications` 后启动。
+3. 前往“系统设置 → 隐私与安全性 → 辅助功能”，允许“窗口叠放”控制其他应用。
+4. 使用控制面板、菜单栏图标或全局快捷键排列窗口。
+5. 横向滑动触控板或鼠标滚轮，在窗口页或叠放窗口之间切换。
+6. 使用“恢复布局”回到本次运行期间记录的原始位置。
 
-如果桌面右键菜单没有出现“窗口叠放”项，请到“系统设置 > 隐私与安全性 > 扩展 > 添加的扩展”，勾选 `窗口叠放右键菜单`。
+应用只处理当前屏幕上的普通窗口，并跳过已最小化、隐藏、全屏及尺寸过小的窗口。
 
-如果之前同时运行过 `dist/WindowStack.app` 和 `/Applications/WindowStack.app`，系统可能注册了旧的重复扩展。可先注销旧路径再重启 Finder：
-
-```bash
-lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-"$lsregister" -u "$PWD/dist/WindowStack.app"
-pluginkit -r "$PWD/dist/WindowStack.app/Contents/PlugIns/WindowStackFinderSync.appex"
-"$lsregister" -f /Applications/WindowStack.app
-pluginkit -a /Applications/WindowStack.app/Contents/PlugIns/WindowStackFinderSync.appex
-pluginkit -e use -i com.local.WindowStack.FinderSync
-killall Finder
-```
-
-## 行为
-
-- 默认平铺：窗口横向排列，高度为桌面高度的一半并垂直居中；窗口较多时分页显示，各页放在屏幕外的真实位置，横向滑动时整页跟手平移进入，如同原生分页。
-- 叠放：窗口按对角线层叠；双指横向滑动时相邻两张连续互滑，松手吸附切换当前前台窗口。
-- 横滑手感：内容跟手移动 → 松手惯性滑行 → 吸附到最近一页/最近一张；快速甩动按速度翻页，慢拖不足半屏自动回弹。惯性（momentum）事件被忽略，不再连跳多页。
-- 横向滚动只响应光标位于排列区域内的手势，不会劫持其他 app 的横滚。
-- 平铺、叠放、恢复和横向滚动都以 30Hz 同步、按位移变化量过滤的平滑动效执行（减少辅助功能接口调用，动画不掉帧）。
-- 备用叠放：统一尺寸并按对角线错落层叠。
-- 只处理当前屏幕上的普通应用窗口。
-- 跳过已最小化、隐藏、全屏和小于 100 x 60 的窗口。
-- 恢复布局只在当前程序运行期间有效。
-
-## 重新构建
+## 从源码构建
 
 ```bash
+git clone https://github.com/la3389600-commits/WindowStack.git
+cd WindowStack
 ./build.sh
 ```
 
-构建产物会写入 `dist/WindowStack.app`。
-构建脚本会同时生成 Finder Sync 右键菜单扩展，并使用本机自签名证书签名；重复构建不会覆盖已有证书。把 `dist/WindowStack.app` 复制到“应用程序”后，注册并启用扩展：
+构建产物位于 `dist/WindowStack.app`。构建脚本会：
+
+1. 直接使用 `swiftc` 编译主应用和 Finder Sync 扩展；
+2. 首次运行时在 `build/keychain/` 创建仅供本项目使用的本地自签名证书；
+3. 签名应用和扩展。
+
+构建脚本不会上传证书或私钥；`build/keychain/` 与 `dist/` 均已被 Git 忽略。
+
+## 启用 Finder 右键菜单
+
+在“系统设置 → 隐私与安全性 → 扩展 → 添加的扩展”中启用“窗口叠放右键菜单”。也可以手动注册：
 
 ```bash
 pluginkit -a /Applications/WindowStack.app/Contents/PlugIns/WindowStackFinderSync.appex
 pluginkit -e use -i com.local.WindowStack.FinderSync
 ```
 
-## GitHub 上的同类工具
+若系统中曾同时运行开发目录和 `/Applications` 下的应用，可能残留重复扩展。注销开发版本后重新注册正式路径即可。
 
-- [Fanned](https://github.com/lxyang777/fanned)：同样是“一键把所有窗口按对角线层叠”的 macOS 菜单栏工具。
-- [Rectangle](https://github.com/rxhanson/Rectangle)：更通用的 macOS 窗口布局工具。
-- [Hammerspoon](https://github.com/Hammerspoon/hammerspoon)：可脚本化控制窗口和系统能力。
-- [yabai](https://github.com/koekeishiya/yabai)：面向高级用户的平铺窗口管理器。
+## 重新生成应用图标
+
+```bash
+mkdir -p build/WindowStack.iconset
+swift build/scripts/generate_icon.swift build/WindowStack.iconset
+iconutil -c icns build/WindowStack.iconset \
+  -o WindowStack/Resources/WindowStack.icns
+```
+
+## 项目结构
+
+```text
+WindowStack/
+├── Sources/                 # AppKit 主应用、窗口排列、动画与快捷键
+└── Resources/               # Info.plist、权限配置与应用图标
+build/scripts/               # 可复现的图标生成脚本
+Tests/                       # 需要辅助功能权限的手动集成测试
+build.sh                     # 无第三方依赖的构建脚本
+```
+
+## 安全与隐私
+
+WindowStack 只通过 macOS Accessibility API 读取和修改窗口位置、尺寸及层级。它不会读取窗口内容，不包含遥测、广告、账户系统或网络请求。公开发布的源码构建使用本地自签名证书；macOS 可能提示应用未经过 Apple 公证。
+
+发现安全问题时，请不要公开披露利用细节，改用仓库的 GitHub Security Advisory 私下报告。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。

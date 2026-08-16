@@ -1,0 +1,24 @@
+name: Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build application
+        run: ./build.sh
+
+      - name: Verify code signature
+        run: codesign --verify --deep --strict dist/WindowStack.app

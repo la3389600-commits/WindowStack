@@ -84,12 +84,12 @@ struct PanConfig: Codable {
     var stepIdleReset: TimeInterval = 0.25      // 滑动停顿超过此时长，已攒的位移清零
     // 1.0 时窗口交换那一刻被完全盖住，跳变才真的看不见；往下调会重新露出跳变
     var switchFadeIntensity: CGFloat = 1.0      // 切换峰值的遮挡强度，0 = 关闭特效
-    var switchFadeDuration: TimeInterval = 1.3  // 毛玻璃淡入淡出总时长
-    var switchFadeBrightness: CGFloat = 1.0     // 遮挡层颜色，0 = 中性灰，1 = 纯白
+    var switchFadeDuration: TimeInterval = 1.3  // 黑色渐变淡入淡出总时长
+    var switchFadeBrightness: CGFloat = 0.9     // 黑色遮挡深度，0 = 深灰，1 = 纯黑
 
     /// 过渡观感这组参数每调一次版就 +1；存档里比它小就把这几项重置回新默认，
     /// 免得用户一直停在旧手感上，也省掉一堆一次性的迁移判断。
-    static let currentFadeStyleRevision = 5
+    static let currentFadeStyleRevision = 6
     var fadeStyleRevision = PanConfig.currentFadeStyleRevision
 
     // 跟手模式
@@ -106,6 +106,12 @@ struct PanConfig: Codable {
     var legacyIdleTimeout: TimeInterval = 0.18
     var bandMarginPages: Int = 1
     var parkFarPagesOnSettle: Bool = true
+
+    // 布局参数（与滑动交互模式无关；平铺和叠放分别保存）
+    var tileWidthRatio: CGFloat = 0.5
+    var tileHeightRatio: CGFloat = 0.5
+    var cascadeWidthRatio: CGFloat = 0.5
+    var cascadeHeightRatio: CGFloat = 0.5
 
     init() {}
 
@@ -134,6 +140,10 @@ struct PanConfig: Codable {
         legacyIdleTimeout = try c.decodeIfPresent(TimeInterval.self, forKey: .legacyIdleTimeout) ?? d.legacyIdleTimeout
         bandMarginPages = try c.decodeIfPresent(Int.self, forKey: .bandMarginPages) ?? d.bandMarginPages
         parkFarPagesOnSettle = try c.decodeIfPresent(Bool.self, forKey: .parkFarPagesOnSettle) ?? d.parkFarPagesOnSettle
+        tileWidthRatio = try c.decodeIfPresent(CGFloat.self, forKey: .tileWidthRatio) ?? d.tileWidthRatio
+        tileHeightRatio = try c.decodeIfPresent(CGFloat.self, forKey: .tileHeightRatio) ?? d.tileHeightRatio
+        cascadeWidthRatio = try c.decodeIfPresent(CGFloat.self, forKey: .cascadeWidthRatio) ?? d.cascadeWidthRatio
+        cascadeHeightRatio = try c.decodeIfPresent(CGFloat.self, forKey: .cascadeHeightRatio) ?? d.cascadeHeightRatio
     }
 }
 
@@ -151,6 +161,9 @@ final class WindowArranger {
     private var pageSize: Int = 1
     private var pageCount: Int = 1
     private var currentMode: ArrangementMode?
+
+    /// 当前生效的排列方式，没排过是 nil。调尺寸参数时用它决定预览哪种布局。
+    var activeMode: ArrangementMode? { currentMode }
 
     // 平铺内容坐标系
     private var contentBaseFrames: [CGRect] = []
@@ -255,7 +268,7 @@ final class WindowArranger {
         currentMode = mode
 
         if mode == .tile {
-            let metrics = tileMetrics(visibleAXFrame: visibleAXFrame)
+            let metrics = layoutMetrics(visibleAXFrame: visibleAXFrame, mode: .tile)
             let targetSize = CGSize(width: metrics.windowWidth, height: metrics.windowHeight)
             pageSizes = measureTileSizes(for: records, targetSize: targetSize)
             pageSize = measuredFitCount(
@@ -751,7 +764,7 @@ final class WindowArranger {
             frame: appKitRect(from: bandFrame),
             peak: config.switchFadeIntensity,
             duration: config.switchFadeDuration,
-            brightness: config.switchFadeBrightness,
+            darkness: config.switchFadeBrightness,
             direction: newPage > oldPage ? 1 : -1
         ) { [weak self] done in
             self?.applyTilePageFrames(completion: done)
@@ -1225,14 +1238,16 @@ final class WindowArranger {
 
     // MARK: - 布局计算
 
-    private func tileMetrics(visibleAXFrame: CGRect) -> (windowWidth: CGFloat, windowHeight: CGFloat, gap: CGFloat, margin: CGFloat) {
+    private func layoutMetrics(
+        visibleAXFrame: CGRect,
+        mode: ArrangementMode
+    ) -> (windowWidth: CGFloat, windowHeight: CGFloat, gap: CGFloat, margin: CGFloat) {
         let gap: CGFloat = 12
         let margin: CGFloat = 16
-        let windowHeight = visibleAXFrame.height * 0.5
-        let windowWidth = min(
-            max(windowHeight * 1.6, 420),
-            visibleAXFrame.width * 0.62
-        )
+        let widthRatio = mode == .tile ? config.tileWidthRatio : config.cascadeWidthRatio
+        let heightRatio = mode == .tile ? config.tileHeightRatio : config.cascadeHeightRatio
+        let windowWidth = visibleAXFrame.width * max(0.25, min(0.9, widthRatio))
+        let windowHeight = visibleAXFrame.height * max(0.25, min(0.9, heightRatio))
 
         return (
             windowWidth: windowWidth,
@@ -1243,7 +1258,7 @@ final class WindowArranger {
     }
 
     private func tileFrames(for records: [WindowRecord], visibleAXFrame: CGRect) -> [CGRect] {
-        let metrics = tileMetrics(visibleAXFrame: visibleAXFrame)
+        let metrics = layoutMetrics(visibleAXFrame: visibleAXFrame, mode: .tile)
         let gap = metrics.gap
         let margin = metrics.margin
         let sizes = records.map { effectiveTileSize(for: $0) }
@@ -1313,7 +1328,7 @@ final class WindowArranger {
     }
 
     private func cascadeFrames(count: Int, visibleAXFrame: CGRect) -> [CGRect] {
-        let metrics = tileMetrics(visibleAXFrame: visibleAXFrame)
+        let metrics = layoutMetrics(visibleAXFrame: visibleAXFrame, mode: .cascade)
         let size = CGSize(width: metrics.windowWidth, height: metrics.windowHeight)
 
         let margin: CGFloat = 24

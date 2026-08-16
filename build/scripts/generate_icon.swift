@@ -50,35 +50,33 @@ func drawIcon(pixels: Int, to path: String) {
         path.fill()
     }
 
-    // 卡通表情：给每层窗口画上眼睛（大眼），最前面一张加微笑
+    // 卡通表情：只保留最前面窗口的笑脸，后两层保持干净。
     let faceColor = NSColor(calibratedRed: 0.15, green: 0.18, blue: 0.28, alpha: 1)
     func drawEye(cx: CGFloat, cy: CGFloat, r: CGFloat) {
         let circle = NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
         faceColor.setFill()
         circle.fill()
     }
-    for (index, w) in windows.enumerated() {
-        let eyeY = w.y + wh * 0.62
-        let eyeR = size * 0.024
-        drawEye(cx: w.x + ww * 0.32, cy: eyeY, r: eyeR)
-        drawEye(cx: w.x + ww * 0.64, cy: eyeY, r: eyeR)
-        if index == windows.count - 1 {
-            let smile = NSBezierPath()
-            let cx = w.x + ww * 0.48
-            let cy = w.y + wh * 0.38
-            let sr = ww * 0.13
-            smile.move(to: NSPoint(x: cx - sr, y: cy))
-            smile.curve(
-                to: NSPoint(x: cx + sr, y: cy),
-                controlPoint1: NSPoint(x: cx - sr * 0.35, y: cy - sr * 1.15),
-                controlPoint2: NSPoint(x: cx + sr * 0.35, y: cy - sr * 1.15)
-            )
-            smile.lineWidth = size * 0.014
-            smile.lineCapStyle = .round
-            faceColor.setStroke()
-            smile.stroke()
-        }
-    }
+    let frontWindow = windows[windows.count - 1]
+    let eyeY = frontWindow.y + wh * 0.62
+    let eyeR = size * 0.024
+    drawEye(cx: frontWindow.x + ww * 0.32, cy: eyeY, r: eyeR)
+    drawEye(cx: frontWindow.x + ww * 0.64, cy: eyeY, r: eyeR)
+
+    let smile = NSBezierPath()
+    let cx = frontWindow.x + ww * 0.48
+    let cy = frontWindow.y + wh * 0.38
+    let sr = ww * 0.13
+    smile.move(to: NSPoint(x: cx - sr, y: cy))
+    smile.curve(
+        to: NSPoint(x: cx + sr, y: cy),
+        controlPoint1: NSPoint(x: cx - sr * 0.35, y: cy - sr * 1.15),
+        controlPoint2: NSPoint(x: cx + sr * 0.35, y: cy - sr * 1.15)
+    )
+    smile.lineWidth = size * 0.014
+    smile.lineCapStyle = .round
+    faceColor.setStroke()
+    smile.stroke()
 
     NSGraphicsContext.restoreGraphicsState()
 
